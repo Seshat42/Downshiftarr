@@ -1,0 +1,213 @@
+#!/usr/bin/python3
+import sys
+import os
+import urllib.request
+import json
+import urllib.parse
+import subprocess
+import time
+
+# =================================================================================
+#                               CONFIGURATION
+# =================================================================================
+
+# 1. PLEX SERVER CONNECTION
+PLEX_URL = "http://127.0.0.1:32400"
+PLEX_TOKEN = "YOUR_PLEX_TOKEN_HERE"
+
+# 2. FILE PATHS
+REAL_TRANSCODER_PATH = "/usr/lib/plexmediaserver/Plex Transcoder_REAL"
+LOG_FILE = "/config/plex_shim.log"
+
+# 3. WATERFALL POLICIES
+TARGET_RESOLUTION_HEIGHT = 1080 
+KILL_TRANSCODE_IF_NO_FALLBACK = False
+
+# 4. PERFORMANCE TUNING
+STRIP_HDR_TONEMAP = True
+REMOVE_BITRATE_LIMITS = False
+
+# 5. DEFINITIONS
+VIDEO_EXTENSIONS = (
+    '.mkv', '.mp4', '.m4v', '.avi', '.mov', '.wmv', 
+    '.ts', '.flv', '.webm', '.3gp', '.mpeg', '.mpg'
+)
+
+# =================================================================================
+#                                   LOGIC
+# =================================================================================
+
+def log(message):
+    if LOG_FILE:
+        try:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            pid = os.getpid()
+            with open(LOG_FILE, 'a') as f:
+                f.write(f"[{timestamp}] [PID:{pid}] {message}\n")
+        except:
+            pass
+
+def get_plex_metadata_by_file(filepath):
+    try:
+        filename = os.path.basename(filepath)
+        query = urllib.parse.quote(filename)
+        url = f"{PLEX_URL}/search?query={query}&X-Plex-Token={PLEX_TOKEN}"
+        
+        req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+        with urllib.request.urlopen(req, timeout=1.5) as response:
+            data = json.loads(response.read().decode())
+            
+        hub = data.get('MediaContainer', {}).get('Hub', [])
+        for category in hub:
+            if category['type'] in ['movie', 'episode']:
+                for item in category.get('Metadata', []):
+                    for media in item.get('Media', []):
+                        for part in media.get('Part', []):
+                            if part.get('file') == filepath:
+                                return item
+        return None
+    except Exception as e:
+        log(f"API Error: {e}")
+        return None
+
+def find_waterfall_candidate(item, current_file_path):
+    """
+    Optimized: Scans media versions in a single pass (O(n)).
+    """
+    best_candidate_path = None
+    best_candidate_res = 0
+    current_file_res = 0
+    
+    try:
+        # Single Pass Loop
+        for media in item.get('Media', []):
+            # Parse Resolution
+            res_str = str(media.get('videoResolution', '0')).lower()
+            height = 0
+            if res_str == '4k': height = 2160
+            elif res_str == '1080': height = 1080
+            elif res_str == '720': height = 720
+            elif res_str == 'sd': height = 480
+            elif res_str.isdigit(): height = int(res_str)
+
+            part = media.get('Part', [{}])[0]
+            part_path = part.get('file')
+
+            # Check 1: Is this the file currently being played?
+            if part_path == current_file_path:
+                current_file_res = height
+                continue # Cannot swap to itself
+
+            # Check 2: Is this a valid candidate?
+            if height > 2000: continue # Skip 4K
+            if height > TARGET_RESOLUTION_HEIGHT: continue 
+
+            # Selection: Maximize quality within constraints
+            if height >= best_candidate_res:
+                best_candidate_res = height
+                best_candidate_path = part_path
+
+        # Logic Gate: Did we actually need to swap?
+        # If input is already low res (<2000) and NOT HDR, abort.
+        # We rely on string dump of item for robust HDR detection.
+        if current_file_res < 2000 and "hdr" not in str(item).lower():
+            return None, 0, False
+
+        return best_candidate_path, best_candidate_res, True
+
+    except Exception as e:
+        log(f"Waterfall Logic Error: {e}")
+        return None, 0, False
+
+def clean_arguments_for_optimization(args, swap_occurred):
+    """
+    Optimized: Returns immediately (O(1)) if no work is needed.
+    """
+    # OPTIMIZATION: Early Exit
+    if not swap_occurred and not REMOVE_BITRATE_LIMITS:
+        return args
+
+    new_args = []
+    skip_next = False
+    
+    for i, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+
+        if swap_occurred and STRIP_HDR_TONEMAP and arg in ['-filter_complex', '-vf']:
+            next_arg = args[i+1] if (i+1) < len(args) else ""
+            if any(x in next_arg for x in ['tonemap', 'zscale', 'libplacebo', 'procamp']):
+                log("Optimization: Stripped HDR Tone Mapping filters.")
+                skip_next = True
+                continue
+
+        if REMOVE_BITRATE_LIMITS and arg in ['-b:v', '-maxrate', '-bufsize']:
+            log(f"Optimization: Stripped bitrate limit ({arg}).")
+            skip_next = True
+            continue
+
+        new_args.append(arg)
+    
+    return new_args
+
+def execute_real_transcoder(args):
+    try:
+        os.execv(REAL_TRANSCODER_PATH, [REAL_TRANSCODER_PATH] + args)
+    except OSError as e:
+        log(f"CRITICAL ERROR: Could not execute real transcoder: {e}")
+        sys.exit(1)
+
+def main():
+    original_args = sys.argv[1:]
+    
+    input_file = None
+    input_index = -1
+    
+    # --- COMBINED PHASE 0 & 1: SINGLE PASS SCAN ---
+    # Scans for Direct Stream (Abort condition) AND Input File simultaneously.
+    for i, arg in enumerate(original_args):
+        
+        # 1. CHECK FOR DIRECT STREAM
+        if arg in ['-c:v', '-vcodec']:
+            if (i + 1) < len(original_args) and original_args[i+1] == 'copy':
+                execute_real_transcoder(original_args)
+                return
+
+        # 2. CHECK FOR INPUT FILE
+        if arg == '-i':
+            if (i + 1) < len(original_args):
+                val = original_args[i+1]
+                if val.lower().endswith(VIDEO_EXTENSIONS):
+                    input_file = val
+                    input_index = i + 1
+    
+    # --- PHASE 2: WATERFALL LOGIC ---
+    swap_occurred = False
+    if input_file:
+        item = get_plex_metadata_by_file(input_file)
+        
+        if item:
+            sibling_file, sibling_res, should_swap = find_waterfall_candidate(item, input_file)
+            
+            if should_swap:
+                if sibling_file:
+                    log(f"Waterfall Success: Swapping to {sibling_res}p version -> {os.path.basename(sibling_file)}")
+                    original_args[input_index] = sibling_file
+                    swap_occurred = True
+                else:
+                    log("Waterfall Failed: Input is 4K, but no fallback found.")
+                    if KILL_TRANSCODE_IF_NO_FALLBACK:
+                        log("Policy Enforcement: KILLING STREAM.")
+                        sys.exit(1)
+
+    # --- PHASE 3: OPTIMIZE ---
+    final_args = clean_arguments_for_optimization(original_args, swap_occurred)
+
+    # --- PHASE 4: EXECUTE ---
+    execute_real_transcoder(final_args)
+
+if __name__ == "__main__":
+    main()
+
+

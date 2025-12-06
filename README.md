@@ -1,6 +1,8 @@
 ## Full rebuild was done to this repo
 
-For the moment I have removed the allow 4k transcoding, it will return.
+For the moment I have removed the "allow 4k transcoding if no lower versions available", it will return.
+
+Information to explain how the "Plex Transcoder" file is to ne used will ne added soon.
 
 # Downshiftarr
 

@@ -2,7 +2,7 @@
 
 For the moment I have removed the "allow 4k transcoding if no lower versions available", it will return.
 
-Information to explain how the "Plex Transcoder" file is to ne used will ne added soon.
+Information to explain how the "Plex Transcoder" file is to be used will be added soon.
 
 # Downshiftarr
 

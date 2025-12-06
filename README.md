@@ -4,6 +4,8 @@ For the moment I have removed the "allow 4k transcoding if no lower versions ava
 
 Information to explain how the "Plex Transcoder" file is to be used will be added soon.
 
+### Check out the dev branch for all configurable features
+
 # Downshiftarr
 
 **Downshiftarr** is a Tautulli script that strictly enforces Plex transcoding policies. It protects your server resources by preventing 4K transcoding and automatically "downshifting" clients to a lower quality version (e.g., 1080p, 720p) if one exists.

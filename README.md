@@ -30,7 +30,7 @@ When a user triggers a transcode, Downshiftarr executes the following logic:
     * If the content is **4K (>= 2160p)** and is transcoding:
     * The script searches for a non-4K version (1080p, 720p, SD).
     * **If found:** It commands the client to switch to that version immediately (preserving playback offset).
-    * **If NOT found:** It checks your `ALLOW_4K_TRANSCODE_IF_NO_FALLBACK` setting to either kill the stream or allow it.
+    * **If NOT found:** It kills the stream.
 4.  **Standard Waterfall (1080p/720p Enforcement):**
     * If the content is **1080p** or **720p** and `ENFORCE_DIRECT_1080` is True:
     * It steps down one "rung" (e.g., looks for 720p if 1080p is transcoding).

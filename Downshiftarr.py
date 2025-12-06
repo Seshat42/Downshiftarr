@@ -6,7 +6,7 @@ Author: Seshat42
 Version: 0.0.2
 
 Plex transcode guard with waterfall auto-switch (plexapi) + Tautulli fallback.
-DEBUG VERSION: Prints all visible sessions for troubleshooting.
+
 """
 
 from __future__ import annotations

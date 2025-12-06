@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
+Name: Downshiftarr
 Author: Seshat42
-Version: 0.0.2
+Version: 0.1.0
 
 Plex transcode guard with waterfall auto-switch (plexapi) + Tautulli fallback.
-
 """
 
 from __future__ import annotations
@@ -39,6 +39,14 @@ ENFORCE_DIRECT_1080 = True
 ENFORCE_DIRECT_720  = False
 BLOCK_HDR_TRANSCODING = True
 RUNG_ORDER = [2160, 1440, 1080, 720, 576, 480, 360, 240]
+
+# If True: If a 4K transcode occurs and NO lower version exists, allow the 4K transcode to continue.
+# If False: If no lower version exists, KILL the stream.
+ALLOW_4K_TRANSCODE_IF_NO_FALLBACK = True
+
+# If True: when a non-4K fallback exists but the client cannot be reached, defer termination
+# to allow another transcode decision event to retry.
+DEFER_4K_TERMINATION_WHEN_CLIENT_UNRESOLVED = False
 
 ALLOW_ON_DIRECT_STATES = {
     "directplay", "direct play", "direct_play",
@@ -188,6 +196,7 @@ def current_height_and_dr(vid_obj) -> Tuple[Optional[int], Optional[str]]:
     return height, dr
 
 def pick_next_rung(cur_height: int, prefer_sdr: bool) -> Optional[int]:
+    # This helper is kept simple; iteration is now handled in main() for better robustness
     order = [h for h in RUNG_ORDER if h != 2160]
     if prefer_sdr: return cur_height if cur_height != 2160 else 1080
     for h in order:
@@ -247,14 +256,26 @@ def main() -> int:
         plex, args.session_id, args.rating_key, args.username, args.client_machine_id
     )
 
+    # 1. Client Unresolved Handling
+    # Check if it looks like 4K based on args (in case video_obj is missing)
+    cur_is_4k_arg = looks_4k_from_str(args.source_resolution)
+
     if not video_obj or not client:
         log.warning("Unable to locate active session/player after retries.")
+        
+        # Enforce DEFER_4K_TERMINATION_WHEN_CLIENT_UNRESOLVED policy
+        if cur_is_4k_arg:
+            if not DEFER_4K_TERMINATION_WHEN_CLIENT_UNRESOLVED:
+                log.info("Client unresolved and 4K termination enforced (DEFER=False).")
+                tautulli_terminate(args.session_id, KILL_MESSAGE)
+            else:
+                log.info("Client unresolved but 4K termination deferred (DEFER=True).")
         return 0
 
     cur_height, cur_dr = current_height_and_dr(video_obj)
     if cur_height is None: cur_height = parse_height_from_source(args.source_resolution)
     
-    cur_is_4k = (cur_height is not None and cur_height >= 2160) or looks_4k_from_str(args.source_resolution)
+    cur_is_4k = (cur_height is not None and cur_height >= 2160) or cur_is_4k_arg
     dr_flag = (args.video_dynamic_range or cur_dr or "SDR").upper()
     is_hdr_like = dr_flag != "SDR"
 
@@ -266,27 +287,55 @@ def main() -> int:
         return 0
 
     prefer_sdr = is_hdr_like and (cur_height or 0) < 2160
-    target_height = pick_next_rung(cur_height or 2160, prefer_sdr=prefer_sdr)
     
-    if target_height is None:
-        log.info("No lower rung available. Waterfall end.")
-        return 0
+    # 2. Waterfall / Fallback Logic
+    # Iterate down the ladder to find ANY valid target.
+    valid_target_index = None
+    valid_target_height = None
 
-    target_index = find_media_index_for_height(video_obj, target_height, prefer_sdr=prefer_sdr)
-    if target_index is None:
-        log.info("No media at %sp (SDR=%s).", target_height, prefer_sdr)
-        if cur_is_4k: tautulli_terminate(args.session_id, KILL_MESSAGE)
+    # A) Try SDR at current height first if applicable (e.g. 1080p HDR -> 1080p SDR)
+    if prefer_sdr and cur_height:
+        idx = find_media_index_for_height(video_obj, cur_height, prefer_sdr=True)
+        if idx is not None:
+            valid_target_height = cur_height
+            valid_target_index = idx
+
+    # B) If no same-height SDR, walk down the RUNG_ORDER
+    if valid_target_index is None:
+        # Get all rungs strictly lower than current
+        candidates = [h for h in RUNG_ORDER if h < (cur_height or 2160)]
+        for h in candidates:
+            # Check if this rung exists. We pass prefer_sdr to prefer SDR versions of lower rungs too.
+            idx = find_media_index_for_height(video_obj, h, prefer_sdr=prefer_sdr)
+            if idx is not None:
+                valid_target_height = h
+                valid_target_index = idx
+                break
+
+    # 3. No Fallback Handling
+    if valid_target_index is None:
+        log.info("No lower rung/media available (SDR=%s).", prefer_sdr)
+        if cur_is_4k:
+            if not ALLOW_4K_TRANSCODE_IF_NO_FALLBACK:
+                log.info("No fallback exists and 4K allowed flag is FALSE. Terminating.")
+                tautulli_terminate(args.session_id, KILL_MESSAGE)
+            else:
+                log.info("No fallback exists but 4K allowed flag is TRUE. Allowing.")
         return 0
 
     try:
         offset_ms = getattr(video_obj, "viewOffset", None) or 0
-        client.playMedia(video_obj, offset=offset_ms, mediaIndex=target_index)
-        log.info("SWITCH SENT: mediaIndex=%s to client=%s", target_index, getattr(client, "title", client))
+        client.playMedia(video_obj, offset=offset_ms, mediaIndex=valid_target_index)
+        log.info("SWITCH SENT: mediaIndex=%s (%sp) to client=%s", 
+                 valid_target_index, valid_target_height, getattr(client, "title", client))
     except Exception as e:
         log.warning("Switch failed: %s", e)
-        if cur_is_4k: tautulli_terminate(args.session_id, KILL_MESSAGE)
+        # If switch fails and we are in 4K, terminate (consistent with previous behavior)
+        if cur_is_4k: 
+            tautulli_terminate(args.session_id, KILL_MESSAGE)
 
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -81,13 +81,6 @@ Open `downshiftarr.py` and edit the **USER CONFIG** section at the top.
    pip install -r requirements.txt
    ```
 
-5. **Verify with a dry run (you dont need to do this)**
-   * From the command line, run with placeholder values to confirm wiring:
-
-     ```bash
-     python3 downshiftarr.py RATING_KEY MACHINE_ID USERNAME SESSION_ID USER_ID "4k" "transcode" "HDR" --dry-run
-     ```
-   * After the run (or any Tautulli-triggered execution), check the **Tautulli notification logs** to confirm the script executed and review decision details.
 
 ### Tautulli Setup
 

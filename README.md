@@ -1,10 +1,12 @@
 Information to explain how the "Plex Transcoder" file is to be used will be added soon.
 
+The full solution is going to end up requiring use of the Plex Transcoder file. The reason is because the Plex devs have been destroying their app ecosystem with the new shitperience apps, as well as some of the smartTV apps can still misbehave.
+
 # Downshiftarr
 
 Downshiftarr is a **Plex 4K/HDR/DV transcode guard** designed to be run from a **Tautulli “Script” notification**.
 
-When a client tries to **VIDEO-transcode** a protected source (4K and/or HDR/DV), Downshiftarr will:
+When a client tries to **VIDEO transcode** a protected source (4K and/or HDR/DV), Downshiftarr will:
 
 1. Find the active Plex session (best-effort, with short retries).
 2. Determine what version is *actually being played* from Plex session metadata (the source of truth).

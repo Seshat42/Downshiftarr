@@ -1,213 +1,1088 @@
-#!/usr/bin/python3
-import sys
-import os
-import urllib.request
+#!/usr/bin/env python3
+"""Downshiftarr Plex Transcoder Shim
+
+This file is designed to *replace* the real "Plex Transcoder" binary on Linux.
+
+Why this exists:
+  - Plex will happily start transcoding a 4K / HDR / Dolby Vision source even when
+    you have a perfectly good 1080p SDR version sitting right next to it.
+  - Downshiftarr.py (triggered by Tautulli) is great at *reacting* to that, but it
+    still has to wait for a session to exist.
+
+So this shim becomes the *first line of defense*:
+  1) Plex spawns "Plex Transcoder" (this shim)
+  2) The shim decides whether the requested input is "protected" (4K-ish and/or
+     HDR/DV)
+  3) If protected: try to swap the input to an existing compliant version (e.g. 1080p SDR)
+  4) If we cannot safely swap: optionally fail-closed (exit non‑zero) to prevent any
+     protected transcoding from ever starting.
+  5) Finally exec() the real transcoder so there is no long-running wrapper process.
+
+Important reality check:
+  - This shim cannot see the Plex session/user/client context the way Downshiftarr.py can.
+  - This shim is therefore *not* a full replacement for Downshiftarr.py.
+  - For best results / “100% compliance” you run BOTH:
+      • Plex Transcoder shim (prevent / redirect work at spawn-time)
+      • Downshiftarr.py (Tautulli-driven enforcement + client switching + termination)
+
+The code is intentionally dependency-free (stdlib only) so it can run in minimal
+Plex environments.
+"""
+
+from __future__ import annotations
+
 import json
-import urllib.parse
-import subprocess
+import os
+import re
+import sys
 import time
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-# =================================================================================
-#                               CONFIGURATION
-# =================================================================================
 
-# 1. PLEX SERVER CONNECTION
-PLEX_URL = "http://127.0.0.1:32400"
-PLEX_TOKEN = "YOUR_PLEX_TOKEN_HERE"
+# =====================================================================================
+# Configuration
+# =====================================================================================
+# Tip:
+#   Keep the policy values aligned with Downshiftarr.env / Downshiftarr.py so both
+#   components agree on what “protected” means and what a “compliant fallback” is.
+# =====================================================================================
 
-# 2. FILE PATHS
-REAL_TRANSCODER_PATH = "/usr/lib/plexmediaserver/Plex Transcoder_REAL"
-LOG_FILE = "/config/plex_shim.log"
 
-# 3. WATERFALL POLICIES
-TARGET_RESOLUTION_HEIGHT = 1080 
-KILL_TRANSCODE_IF_NO_FALLBACK = False
+# --- 1) How to locate / exec the real Plex Transcoder binary -------------------------
 
-# 4. PERFORMANCE TUNING
-STRIP_HDR_TONEMAP = True
-REMOVE_BITRATE_LIMITS = False
+# Recommended: leave this empty and the shim will auto-detect by looking for
+# "<this file>_REAL".
+REAL_TRANSCODER_PATH: str = ""
 
-# 5. DEFINITIONS
-VIDEO_EXTENSIONS = (
-    '.mkv', '.mp4', '.m4v', '.avi', '.mov', '.wmv', 
-    '.ts', '.flv', '.webm', '.3gp', '.mpeg', '.mpg'
+# Suffix used when you rename the original binary.
+# Example:
+#   mv "Plex Transcoder" "Plex Transcoder_REAL"
+REAL_TRANSCODER_SUFFIX: str = "_REAL"
+
+
+# --- 2) Logging ----------------------------------------------------------------------
+
+# Set to "" to disable file logging.
+LOG_FILE: str = "/config/plex_transcoder_shim.log"
+
+# One of: "DEBUG", "INFO", "WARNING", "ERROR".
+LOG_LEVEL: str = "INFO"
+
+
+# --- 3) Plex API connectivity --------------------------------------------------------
+
+# Plex Media Server base URL. In Docker this is usually 127.0.0.1:32400 *inside the container*.
+PLEX_URL: str = "http://127.0.0.1:32400"
+
+# Token used for Plex API calls.
+#
+# Security-friendly default: leave blank and let the shim use the X_PLEX_TOKEN env var, which Plex typically provides when spawning the transcoder (seen in Plex logs).
+PLEX_TOKEN: str = ""
+
+# Environment variables to check for a token if PLEX_TOKEN is blank.
+PLEX_TOKEN_ENV_VARS: Tuple[str, ...] = (
+    "X_PLEX_TOKEN",            # commonly present
+    "PLEX_TOKEN",              # sometimes present
+    "PLEX_CLAIM_TOKEN",        # harmless to try
 )
 
-# =================================================================================
-#                                   LOGIC
-# =================================================================================
+# Network timeout for Plex API calls (seconds). Keep this small to avoid delaying playback.
+PLEX_HTTP_TIMEOUT_S: float = 0.75
 
-def log(message):
-    if LOG_FILE:
+# Search endpoints to try (newer Plex typically supports /hubs/search).
+# We try them in order and fall back if one fails.
+PLEX_SEARCH_ENDPOINTS: Tuple[str, ...] = (
+    "/hubs/search",
+    "/hubs/search/",
+    "/search",
+    "/search/",
+)
+
+# Max items returned per hub for /hubs/search.
+# If your libraries are huge and you have generic file names, raising this can help.
+PLEX_SEARCH_LIMIT_PER_HUB: int = 25
+
+
+# --- 4) Intercept scope (avoid breaking non-streaming transcoder jobs) ----------------
+
+# Only intercept streaming transcodes (DASH/HLS). Recommended.
+ONLY_INTERCEPT_STREAMING_TRANSCODES: bool = True
+
+# Formats Plex uses for segmented streaming. (Commonly "dash"; "hls" in some cases.)
+STREAMING_OUTPUT_FORMATS: Tuple[str, ...] = ("dash", "hls")
+
+# If video is being copied (direct stream/remux or audio-only transcode), do not interfere.
+SKIP_WHEN_VIDEO_CODEC_COPY: bool = True
+
+
+# --- 5) Policy: what counts as "protected" and what counts as "compliant" -------------
+
+# Height threshold used to treat the source as "4K-ish".
+# Keep aligned with Downshiftarr.py MAX_ALLOWED_HEIGHT default (2000).
+MAX_ALLOWED_HEIGHT: int = 2000
+
+# Do not allow the shim to select a fallback above this height.
+# Default 1080 keeps the goal very clear: swap to a 1080p or lower version.
+MAX_FALLBACK_HEIGHT: int = 1080
+
+# Preferred fallback heights in priority order.
+# Keep aligned with Downshiftarr.env PREFER_HEIGHTS.
+PREFER_HEIGHTS: Tuple[int, ...] = (1080, 720, 576, 480)
+
+# Dynamic range policy.
+# - If True: only swap to SDR fallbacks.
+# - If False: SDR is preferred, but HDR/DV fallbacks are allowed depending on ALLOW_HDR_FALLBACK.
+FALLBACK_SDR_ONLY: bool = True
+
+# Only used when FALLBACK_SDR_ONLY is False.
+ALLOW_HDR_FALLBACK: bool = False
+
+# If the Plex metadata we can see does not clearly state HDR/DV, we can still infer that Plex *believes* the source is HDR when the transcoder arguments contain HDR->SDR tone-mapping filters.
+#
+# This helps catch cases like 1080p HDR sources when the metadata response is thin.
+TREAT_TONEMAP_ARGS_AS_HDR: bool = True
+
+# Speed optimization: avoid fetching the full `/library/metadata/<ratingKey>` payload unless the search result (or args) indicates the source might be protected.
+#
+# This saves one Plex API call for the *common* case (non-protected transcodes).
+FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED: bool = True
+
+
+# --- 6) Enforcement (fail-open vs fail-closed) ---------------------------------------
+
+# When a *protected* transcode is detected and no safe fallback is found:
+#   True  => exit non-zero to prevent the transcode from starting (strict compliance)
+#   False => fall back to passing through to the real transcoder
+KILL_TRANSCODE_IF_NO_FALLBACK: bool = True
+
+# When we cannot even determine whether the input is protected (API/search failure):
+#   True  => fail closed for streaming transcodes (maximum compliance)
+#   False => pass through (minimum disruption)
+KILL_TRANSCODE_IF_UNSURE: bool = True
+
+
+# --- 7) Performance tuning / argument rewriting --------------------------------------
+
+# Optional: rewrite HDR->SDR tone mapping filters when we swapped to an SDR source.
+#
+# Why this exists:
+#   Plex builds a filter graph for the *original* (HDR) input. If we swap to SDR, the tonemap filters become wasted CPU and can even make SDR look wrong.
+#
+# Implementation detail:
+#   We replace tone mapping filters (tonemap/libplacebo/procamp and some zscale variants) with "null" so the graph structure stays valid.
+STRIP_HDR_TONEMAP_FILTERS: bool = True
+
+# Optional: remove bitrate caps (-maxrate/-bufsize/-b) from the encoder args.
+# This can speed up some encoders by reducing rate-control overhead, but it can also increase bandwidth / output size. Off by default.
+REMOVE_BITRATE_LIMITS: bool = False
+
+
+# --- 8) Stream safety checks ----------------------------------------------------------
+
+# When True, only swap to a fallback file that appears to have *at least* the input stream indexes referenced by the transcoder command line (e.g. if args reference 0:1, ensure fallback has stream index 1).
+#
+# This reduces the risk of "stream map" failures when versions have different audio/sub layouts.
+REQUIRE_STREAM_INDEX_COMPATIBILITY: bool = True
+
+
+# --- 9) Caching (optional) ------------------------------------------------------------
+
+# Cache successful lookups on disk to avoid repeated Plex API calls.
+ENABLE_CACHE: bool = True
+
+# Where to store the cache.
+CACHE_FILE: str = "/config/downshiftarr_plex_transcoder_cache.json"
+
+# Cache time-to-live.
+CACHE_TTL_S: int = 60 * 60  # 1 hour
+
+
+# --- 10) Misc ------------------------------------------------------------------------
+
+# Video file extensions used to identify the primary "-i <file>" input.
+VIDEO_EXTENSIONS: Tuple[str, ...] = (
+    ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv",
+    ".ts", ".flv", ".webm", ".3gp", ".mpeg", ".mpg",
+)
+
+
+# =====================================================================================
+# Helpers: logging
+# =====================================================================================
+
+
+_LOG_LEVELS: Dict[str, int] = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
+
+
+def _log_level_value(level: str) -> int:
+    return _LOG_LEVELS.get((level or "").upper().strip(), 20)
+
+
+def log(level: str, message: str) -> None:
+    if not LOG_FILE:
+        return
+    if _log_level_value(level) < _log_level_value(LOG_LEVEL):
+        return
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        pid = os.getpid()
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [{level.upper():7}] [PID:{pid}] {message}\n")
+    except Exception:
+        # Swallow logging errors; they are never worth breaking playback.
+        pass
+
+
+# =====================================================================================
+# Helpers: Plex HTTP
+# =====================================================================================
+
+
+def effective_plex_token() -> str:
+    """Return the configured token or a best-effort env-provided token."""
+    if PLEX_TOKEN.strip():
+        return PLEX_TOKEN.strip()
+    for env_key in PLEX_TOKEN_ENV_VARS:
+        v = (os.environ.get(env_key) or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _join_url(base: str, path: str) -> str:
+    base = (base or "").rstrip("/")
+    path = (path or "").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
+def plex_get_json(path: str, params: Dict[str, str]) -> Optional[dict]:
+    """GET a Plex endpoint and parse JSON.
+
+    Returns a dict on success, or None on error.
+    """
+    token = effective_plex_token()
+    if not token:
+        log("ERROR", "PLEX_TOKEN is not configured and no X_PLEX_TOKEN env var was found.")
+        return None
+
+    # Build final URL
+    q = dict(params or {})
+    q["X-Plex-Token"] = token
+    url = _join_url(PLEX_URL, path)
+    url = url + ("?" + urllib.parse.urlencode(q))
+
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=PLEX_HTTP_TIMEOUT_S) as resp:
+            raw = resp.read()
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception as e:
+        log("DEBUG", f"Plex API error path={path} err={e}")
+        return None
+
+
+# =====================================================================================
+# Helpers: metadata parsing (height / dynamic range / stream indices)
+# =====================================================================================
+
+
+def safe_int(v) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return None
+        return int(str(v).strip())
+    except Exception:
+        return None
+
+
+def parse_resolution_hint(v) -> Optional[int]:
+    """Parse Plex resolution strings like '4k', '1080', 'sd', etc."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s:
+        return None
+    if s == "4k":
+        return 2160
+    if s == "1080":
+        return 1080
+    if s == "720":
+        return 720
+    if s == "sd":
+        return 480
+    if s.isdigit():
+        n = int(s)
+        return n if n > 0 else None
+    return None
+
+
+def media_height(media: dict) -> Optional[int]:
+    for k in ("height", "videoHeight"):
+        h = safe_int(media.get(k))
+        if h:
+            return h
+    for k in ("videoResolution", "resolution"):
+        h = parse_resolution_hint(media.get(k))
+        if h:
+            return h
+    return None
+
+
+def classify_dynamic_range(dr: str) -> str:
+    s = (dr or "").upper().strip()
+    if not s or s in ("UNKNOWN", "NONE"):
+        return "UNKNOWN"
+    if "SDR" in s:
+        return "SDR"
+    if "DOVI" in s or "DOLBY" in s or "VISION" in s or s == "DV":
+        return "DOLBY VISION"
+    if "HDR" in s or "HLG" in s:
+        return "HDR"
+    # Any other non-empty value is treated as "not SDR".
+    return "HDR"
+
+
+def media_dynamic_range(media: dict) -> str:
+    """Best-effort dynamic range detection.
+
+    Mirrors Downshiftarr.py's approach as closely as possible, but using raw JSON.
+    """
+    for k in ("videoDynamicRange", "dynamicRange", "videoDynamicRangeType"):
+        v = media.get(k)
+        if v:
+            return str(v).upper().strip()
+
+    # Stream inspection fallback (requires full metadata; /hubs/search may not include streams)
+    try:
+        parts = media.get("Part") or []
+        if isinstance(parts, dict):
+            parts = [parts]
+        for part in parts:
+            streams = part.get("Stream") or []
+            if isinstance(streams, dict):
+                streams = [streams]
+            for st in streams:
+                if safe_int(st.get("streamType")) != 1:
+                    continue
+
+                # Dolby Vision flags
+                for a in ("DOVIPresent", "doviPresent", "dolbyVision"):
+                    v = st.get(a)
+                    if str(v).lower() in ("1", "true", "yes"):
+                        return "DOLBY VISION"
+
+                # HDR hints
+                for a in ("hdr", "colorSpace", "colorTransfer", "colorPrimaries"):
+                    v = st.get(a)
+                    if v and any(k in str(v).upper() for k in ("HDR", "DOVI", "DV", "DOLBY", "HLG")):
+                        return "HDR"
+    except Exception:
+        pass
+
+    return "UNKNOWN"
+
+
+def part_max_stream_index(media: dict) -> Optional[int]:
+    """Return the maximum stream index found in the first Part of this Media."""
+    try:
+        parts = media.get("Part") or []
+        if isinstance(parts, dict):
+            parts = [parts]
+        if not parts:
+            return None
+        part = parts[0]
+        streams = part.get("Stream") or []
+        if isinstance(streams, dict):
+            streams = [streams]
+        if not streams:
+            return None
+
+        idxs: List[int] = []
+        for st in streams:
+            i = safe_int(st.get("index"))
+            if i is not None:
+                idxs.append(i)
+
+        if idxs:
+            return max(idxs)
+
+        # If Plex didn't give stream indexes, fall back to count-1.
+        return len(streams) - 1
+    except Exception:
+        return None
+
+
+# =====================================================================================
+# Helpers: argument parsing
+# =====================================================================================
+
+
+def looks_like_video_path(p: str) -> bool:
+    if not p:
+        return False
+    s = p.strip().lower()
+    return any(s.endswith(ext) for ext in VIDEO_EXTENSIONS)
+
+
+def is_streaming_transcode(args: Sequence[str]) -> bool:
+    """Heuristic to avoid messing with non-streaming transcoder jobs.
+
+    Streaming transcodes almost always output DASH or HLS segments.
+    """
+    # Quick keyword checks first.
+    joined = " ".join(args).lower()
+    if "-dash_segment_type" in joined or "-seg_duration" in joined or "seglist" in joined:
+        return True
+
+    # Check explicit output format.
+    for i, a in enumerate(args):
+        if a == "-f" and i + 1 < len(args):
+            fmt = (args[i + 1] or "").strip().lower()
+            if fmt in STREAMING_OUTPUT_FORMATS:
+                return True
+    return False
+
+
+def find_primary_input(args: Sequence[str]) -> Tuple[Optional[str], int]:
+    """Return (input_path, index_in_args) where index points to the value after -i."""
+    best_path: Optional[str] = None
+    best_idx = -1
+
+    for i, a in enumerate(args):
+        if a != "-i" or i + 1 >= len(args):
+            continue
+        v = args[i + 1]
+        if looks_like_video_path(v):
+            best_path, best_idx = v, i + 1
+
+    return best_path, best_idx
+
+
+def video_codec_is_copy(args: Sequence[str], input_value_index: int) -> bool:
+    """Detect audio-only transcodes / remuxing.
+
+    Plex uses ffmpeg-style ordering: options before -i apply to input; after -i apply to outputs.
+    So we only check for copy *after* the main input.
+    """
+    if input_value_index < 0:
+        return False
+    for i in range(input_value_index + 1, len(args) - 1):
+        a = args[i]
+        nxt = args[i + 1]
+        if a in ("-c:v", "-vcodec") and nxt == "copy":
+            return True
+        if a == "-codec:0" and nxt == "copy":
+            return True
+    return False
+
+
+_STREAM_REF_RE = re.compile(r"(?<!\d)0:(\d+)")
+
+
+def required_max_input_stream_index(args: Sequence[str]) -> Optional[int]:
+    """Parse the transcoder args to find the highest referenced input stream index (0:<n>)."""
+    max_idx: Optional[int] = None
+    for a in args:
+        for m in _STREAM_REF_RE.finditer(a):
+            n = safe_int(m.group(1))
+            if n is None:
+                continue
+            if max_idx is None or n > max_idx:
+                max_idx = n
+    return max_idx
+
+
+def args_indicate_hdr_tonemap(args: Sequence[str]) -> bool:
+    """Heuristic: do the args contain HDR->SDR tone-mapping filters?
+
+    This is intentionally simple and fast: we just search for well-known substrings
+    Plex includes when it is trying to tonemap HDR.
+
+    This is *not* used to rewrite anything; it's only used as a "nudge" when
+    Plex metadata doesn't expose HDR/DV cleanly.
+    """
+    if not TREAT_TONEMAP_ARGS_AS_HDR:
+        return False
+    blob = " ".join(args).lower()
+    return any(k in blob for k in ("tonemap", "libplacebo", "procamp"))
+
+
+# =====================================================================================
+# Cache
+# =====================================================================================
+
+
+@dataclass
+class CacheEntry:
+    ts: float
+    rating_key: str
+    fallback_file: str
+    fallback_height: Optional[int]
+    fallback_dr: str
+    fallback_max_stream_index: Optional[int]
+
+
+def _load_cache() -> Dict[str, CacheEntry]:
+    if not (ENABLE_CACHE and CACHE_FILE):
+        return {}
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        entries = {}
+        raw_entries = (data or {}).get("entries", {})
+        now = time.time()
+        for k, v in raw_entries.items():
+            try:
+                ts = float(v.get("ts", 0))
+                if ts <= 0 or (now - ts) > CACHE_TTL_S:
+                    continue
+                entries[k] = CacheEntry(
+                    ts=ts,
+                    rating_key=str(v.get("rating_key", "")),
+                    fallback_file=str(v.get("fallback_file", "")),
+                    fallback_height=safe_int(v.get("fallback_height")),
+                    fallback_dr=str(v.get("fallback_dr", "UNKNOWN")),
+                    fallback_max_stream_index=safe_int(v.get("fallback_max_stream_index")),
+                )
+            except Exception:
+                continue
+        return entries
+    except Exception:
+        return {}
+
+
+def _save_cache(entries: Dict[str, CacheEntry]) -> None:
+    if not (ENABLE_CACHE and CACHE_FILE):
+        return
+    try:
+        os.makedirs(os.path.dirname(CACHE_FILE) or ".", exist_ok=True)
+    except Exception:
+        # Directory might not be creatable; silently give up.
+        return
+
+    payload = {
+        "version": 1,
+        "entries": {
+            k: {
+                "ts": v.ts,
+                "rating_key": v.rating_key,
+                "fallback_file": v.fallback_file,
+                "fallback_height": v.fallback_height,
+                "fallback_dr": v.fallback_dr,
+                "fallback_max_stream_index": v.fallback_max_stream_index,
+            }
+            for k, v in entries.items()
+        },
+    }
+
+    tmp = CACHE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        os.replace(tmp, CACHE_FILE)
+    except Exception:
+        # Best-effort; do not break playback.
         try:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            pid = os.getpid()
-            with open(LOG_FILE, 'a') as f:
-                f.write(f"[{timestamp}] [PID:{pid}] {message}\n")
-        except:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except Exception:
             pass
 
-def get_plex_metadata_by_file(filepath):
-    try:
-        filename = os.path.basename(filepath)
-        query = urllib.parse.quote(filename)
-        url = f"{PLEX_URL}/search?query={query}&X-Plex-Token={PLEX_TOKEN}"
-        
-        req = urllib.request.Request(url, headers={'Accept': 'application/json'})
-        with urllib.request.urlopen(req, timeout=1.5) as response:
-            data = json.loads(response.read().decode())
-            
-        hub = data.get('MediaContainer', {}).get('Hub', [])
-        for category in hub:
-            if category['type'] in ['movie', 'episode']:
-                for item in category.get('Metadata', []):
-                    for media in item.get('Media', []):
-                        for part in media.get('Part', []):
-                            if part.get('file') == filepath:
-                                return item
+
+# =====================================================================================
+# Plex lookup: (file path) -> (library item) -> (fallback file)
+# =====================================================================================
+
+
+def _iter_hub_items(search_json: dict) -> Iterable[dict]:
+    mc = (search_json or {}).get("MediaContainer", {})
+    hubs = mc.get("Hub") or []
+    if isinstance(hubs, dict):
+        hubs = [hubs]
+    for hub in hubs:
+        md = hub.get("Metadata") or []
+        if isinstance(md, dict):
+            md = [md]
+        for item in md:
+            yield item
+
+
+def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
+    """Find (rating_key, item_dict) for a given absolute media file path."""
+    if not file_path:
         return None
-    except Exception as e:
-        log(f"API Error: {e}")
-        return None
 
-def find_waterfall_candidate(item, current_file_path):
-    """
-    Optimized: Scans media versions in a single pass (O(n)).
-    """
-    best_candidate_path = None
-    best_candidate_res = 0
-    current_file_res = 0
-    
-    try:
-        # Single Pass Loop
-        for media in item.get('Media', []):
-            # Parse Resolution
-            res_str = str(media.get('videoResolution', '0')).lower()
-            height = 0
-            if res_str == '4k': height = 2160
-            elif res_str == '1080': height = 1080
-            elif res_str == '720': height = 720
-            elif res_str == 'sd': height = 480
-            elif res_str.isdigit(): height = int(res_str)
+    # The Plex search API expects a query string; using the basename keeps it fast.
+    # We also try a "title-ish" cleaned basename as a second attempt.
+    base = os.path.basename(file_path)
+    base_no_ext = os.path.splitext(base)[0]
+    cleaned = re.sub(r"[\[\(].*?[\]\)]", " ", base_no_ext)  # remove [...] and (...) tags
+    cleaned = re.sub(r"[._]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
-            part = media.get('Part', [{}])[0]
-            part_path = part.get('file')
+    query_candidates = [base_no_ext]
+    if cleaned and cleaned.lower() != base_no_ext.lower():
+        query_candidates.append(cleaned)
 
-            # Check 1: Is this the file currently being played?
-            if part_path == current_file_path:
-                current_file_res = height
-                continue # Cannot swap to itself
-
-            # Check 2: Is this a valid candidate?
-            if height > 2000: continue # Skip 4K
-            if height > TARGET_RESOLUTION_HEIGHT: continue 
-
-            # Selection: Maximize quality within constraints
-            if height >= best_candidate_res:
-                best_candidate_res = height
-                best_candidate_path = part_path
-
-        # Logic Gate: Did we actually need to swap?
-        # If input is already low res (<2000) and NOT HDR, abort.
-        # We rely on string dump of item for robust HDR detection.
-        if current_file_res < 2000 and "hdr" not in str(item).lower():
-            return None, 0, False
-
-        return best_candidate_path, best_candidate_res, True
-
-    except Exception as e:
-        log(f"Waterfall Logic Error: {e}")
-        return None, 0, False
-
-def clean_arguments_for_optimization(args, swap_occurred):
-    """
-    Optimized: Returns immediately (O(1)) if no work is needed.
-    """
-    # OPTIMIZATION: Early Exit
-    if not swap_occurred and not REMOVE_BITRATE_LIMITS:
-        return args
-
-    new_args = []
-    skip_next = False
-    
-    for i, arg in enumerate(args):
-        if skip_next:
-            skip_next = False
-            continue
-
-        if swap_occurred and STRIP_HDR_TONEMAP and arg in ['-filter_complex', '-vf']:
-            next_arg = args[i+1] if (i+1) < len(args) else ""
-            if any(x in next_arg for x in ['tonemap', 'zscale', 'libplacebo', 'procamp']):
-                log("Optimization: Stripped HDR Tone Mapping filters.")
-                skip_next = True
+    for query in query_candidates:
+        for endpoint in PLEX_SEARCH_ENDPOINTS:
+            params = {
+                "query": query,
+                "limit": str(PLEX_SEARCH_LIMIT_PER_HUB),
+            }
+            data = plex_get_json(endpoint, params)
+            if not data:
                 continue
 
-        if REMOVE_BITRATE_LIMITS and arg in ['-b:v', '-maxrate', '-bufsize']:
-            log(f"Optimization: Stripped bitrate limit ({arg}).")
-            skip_next = True
-            continue
+            for item in _iter_hub_items(data):
+                rk = item.get("ratingKey")
+                if not rk:
+                    continue
 
-        new_args.append(arg)
-    
-    return new_args
+                medias = item.get("Media") or []
+                if isinstance(medias, dict):
+                    medias = [medias]
+                for m in medias:
+                    parts = m.get("Part") or []
+                    if isinstance(parts, dict):
+                        parts = [parts]
+                    for p in parts:
+                        if p.get("file") == file_path:
+                            return str(rk), item
 
-def execute_real_transcoder(args):
+    return None
+
+
+def plex_fetch_full_metadata(rating_key: str) -> Optional[dict]:
+    if not rating_key:
+        return None
+
+    data = plex_get_json(f"/library/metadata/{rating_key}", params={})
+    if not data:
+        return None
+
+    mc = data.get("MediaContainer", {})
+    md = mc.get("Metadata") or []
+    if isinstance(md, dict):
+        md = [md]
+    if not md:
+        return None
+    return md[0]
+
+
+@dataclass
+class MediaInfo:
+    media: dict
+    file_path: str
+    height: Optional[int]
+    dyn_range: str
+    dyn_range_class: str
+    max_stream_index: Optional[int]
+
+
+def build_media_info(media: dict) -> Optional[MediaInfo]:
+    parts = media.get("Part") or []
+    if isinstance(parts, dict):
+        parts = [parts]
+    if not parts:
+        return None
+    p0 = parts[0]
+    fp = p0.get("file")
+    if not fp:
+        return None
+
+    h = media_height(media)
+    dr = media_dynamic_range(media)
+    drc = classify_dynamic_range(dr)
+    msi = part_max_stream_index(media)
+    return MediaInfo(media=media, file_path=str(fp), height=h, dyn_range=dr, dyn_range_class=drc, max_stream_index=msi)
+
+
+def find_current_media(full_item: dict, input_file: str) -> Optional[MediaInfo]:
+    medias = full_item.get("Media") or []
+    if isinstance(medias, dict):
+        medias = [medias]
+    for m in medias:
+        parts = m.get("Part") or []
+        if isinstance(parts, dict):
+            parts = [parts]
+        for p in parts:
+            if p.get("file") == input_file:
+                return build_media_info(m)
+    return None
+
+
+def is_protected_source(mi: MediaInfo) -> bool:
+    if mi.height is not None and mi.height >= MAX_ALLOWED_HEIGHT:
+        return True
+    if mi.dyn_range_class not in ("SDR", "UNKNOWN"):
+        return True
+    return False
+
+
+def pick_best_fallback(
+    full_item: dict,
+    current: MediaInfo,
+    required_max_stream: Optional[int],
+) -> Optional[MediaInfo]:
+    """Return the best fallback MediaInfo according to policy."""
+
+    def candidate_score(h: int) -> Tuple[int, int]:
+        if h in PREFER_HEIGHTS:
+            pref_rank = list(PREFER_HEIGHTS).index(h)
+        else:
+            # After preferred heights, pick the biggest under the max.
+            pref_rank = len(PREFER_HEIGHTS) + (MAX_ALLOWED_HEIGHT - h)
+        return pref_rank, -h
+
+    medias = full_item.get("Media") or []
+    if isinstance(medias, dict):
+        medias = [medias]
+
+    # Two-pass selection
+    if FALLBACK_SDR_ONLY:
+        passes: List[Tuple[str, bool]] = [("SDR_ONLY", True)]
+    else:
+        if ALLOW_HDR_FALLBACK:
+            passes = [("SDR_PREFERRED", True), ("ALLOW_HDR", False)]
+        else:
+            passes = [("ALLOW_HDR_ONLY", False)]
+
+    for pass_name, sdr_only in passes:
+        candidates: List[Tuple[MediaInfo, Tuple[int, int]]] = []
+
+        for m in medias:
+            mi = build_media_info(m)
+            if not mi:
+                continue
+
+            # Exclude the currently requested file.
+            if mi.file_path == current.file_path:
+                continue
+
+            # Must have a known height.
+            if mi.height is None:
+                continue
+
+            # Never allow 4K-ish versions, and respect the explicit fallback max.
+            if mi.height >= MAX_ALLOWED_HEIGHT:
+                continue
+            if mi.height > MAX_FALLBACK_HEIGHT:
+                continue
+
+            # Dynamic range policy.
+            if sdr_only and mi.dyn_range_class != "SDR":
+                continue
+
+            # Only accept a real downshift, except allow equal height if we improve HDR->SDR.
+            acceptable = False
+            if current.height is not None:
+                if mi.height < current.height:
+                    acceptable = True
+                elif current.dyn_range_class != "SDR" and mi.dyn_range_class == "SDR" and mi.height <= current.height:
+                    acceptable = True
+            else:
+                acceptable = True
+
+            if not acceptable:
+                continue
+
+            # Stream index compatibility check (optional).
+            if REQUIRE_STREAM_INDEX_COMPATIBILITY and required_max_stream is not None:
+                if mi.max_stream_index is None or mi.max_stream_index < required_max_stream:
+                    continue
+
+            candidates.append((mi, candidate_score(mi.height)))
+
+        if candidates:
+            candidates.sort(key=lambda t: t[1])
+            best = candidates[0][0]
+            log(
+                "DEBUG",
+                f"Fallback pass={pass_name} candidates="
+                f"{[(c[0].height, c[0].dyn_range_class, os.path.basename(c[0].file_path)) for c in candidates[:5]]}",
+            )
+            return best
+
+    return None
+
+
+# =====================================================================================
+# Argument rewriting / optimization
+# =====================================================================================
+
+
+_TONEMAP_RE = re.compile(
+    # Match a filter token that starts either at the beginning of the graph OR immediately after a separator/combinator.
+    #
+    # In Plex-generated filter graphs, tonemap related filters typically appear after an input label (']') or after ',' / ';'.
+    r"(^|[,;\]])(?P<name>tonemap|libplacebo|procamp|zscale)(?P<opts>=[^,;\[]*)?",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_filter_graph(filters: str) -> Tuple[str, bool]:
+    """Rewrite filter graphs by replacing tonemap-related filters with 'null'.
+
+    Returns (new_filters, changed).
+    """
+
+    def repl(m: re.Match) -> str:
+        prefix = m.group(1) or ""
+        name = (m.group("name") or "").lower()
+        opts = m.group("opts") or ""
+
+        if name == "zscale":
+            # Don't nuke zscale if it looks like it's doing resizing. (zscale used for HDR colorspace conversion typically has t=/transfer=/npl=/primaries=/matrix=)
+            o = opts.lower()
+            if "w=" in o or "h=" in o:
+                return prefix + name + opts
+            return prefix + "null"
+
+        # For tonemap/libplacebo/procamp, replace with null unconditionally.
+        return prefix + "null"
+
+    new_s, n = _TONEMAP_RE.subn(repl, filters)
+    return new_s, (n > 0 and new_s != filters)
+
+
+def rewrite_args_for_performance(
+    args: List[str],
+    input_value_index: int,
+    swapped_to_sdr: bool,
+) -> List[str]:
+    """Return a rewritten arg list (or the original list if no changes were needed)."""
+    if not swapped_to_sdr and not REMOVE_BITRATE_LIMITS:
+        return args
+
+    out: List[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+
+        # Bitrate limit stripping: only after the input, so we don't touch decoder hints.
+        if REMOVE_BITRATE_LIMITS and input_value_index >= 0 and i > input_value_index:
+            if (
+                a in ("-b", "-b:v", "-maxrate", "-bufsize")
+                or a.startswith("-b:")
+                or a.startswith("-maxrate:")
+                or a.startswith("-bufsize:")
+            ):
+                if i + 1 < len(args):
+                    log("DEBUG", f"Optimization: removed bitrate option {a} {args[i+1]}")
+                    i += 2
+                    continue
+
+        # HDR tone mapping stripping: rewrite the filter graph, don't delete it.
+        if swapped_to_sdr and STRIP_HDR_TONEMAP_FILTERS and a in ("-filter_complex", "-vf"):
+            if i + 1 < len(args):
+                original = args[i + 1]
+                rewritten, changed = _rewrite_filter_graph(original)
+                out.append(a)
+                out.append(rewritten)
+                if changed:
+                    log("DEBUG", "Optimization: replaced tone-mapping filters with 'null' (swap-to-SDR)")
+                i += 2
+                continue
+
+        out.append(a)
+        i += 1
+
+    return out
+
+
+# =====================================================================================
+# Exec real transcoder
+# =====================================================================================
+
+
+def resolve_real_transcoder_path() -> str:
+    """Resolve the on-disk path to the real Plex Transcoder binary."""
+    if REAL_TRANSCODER_PATH.strip():
+        return REAL_TRANSCODER_PATH.strip()
+
+    # Default: same directory as this shim, plus suffix.
+    shim_path = os.path.realpath(sys.argv[0])
+    candidate = shim_path + REAL_TRANSCODER_SUFFIX
+    if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+
+    # Common Plex locations (best-effort).
+    common = [
+        "/usr/lib/plexmediaserver/Plex Transcoder" + REAL_TRANSCODER_SUFFIX,
+        "/usr/lib/plexmediaserver/Plex Transcoder",  # last-ditch fallback (may recurse!)
+    ]
+    for p in common:
+        if os.path.exists(p) and os.access(p, os.X_OK) and os.path.realpath(p) != shim_path:
+            return p
+
+    return candidate  # will error later with a helpful log
+
+
+def exec_real_transcoder(real_path: str, args: Sequence[str]) -> None:
     try:
-        os.execv(REAL_TRANSCODER_PATH, [REAL_TRANSCODER_PATH] + args)
+        os.execv(real_path, [real_path] + list(args))
     except OSError as e:
-        log(f"CRITICAL ERROR: Could not execute real transcoder: {e}")
+        log("ERROR", f"CRITICAL: could not exec real transcoder at '{real_path}': {e}")
         sys.exit(1)
 
-def main():
-    original_args = sys.argv[1:]
-    
-    input_file = None
-    input_index = -1
-    
-    # --- COMBINED PHASE 0 & 1: SINGLE PASS SCAN ---
-    # Scans for Direct Stream (Abort condition) AND Input File simultaneously.
-    for i, arg in enumerate(original_args):
-        
-        # 1. CHECK FOR DIRECT STREAM
-        if arg in ['-c:v', '-vcodec']:
-            if (i + 1) < len(original_args) and original_args[i+1] == 'copy':
-                execute_real_transcoder(original_args)
+
+# =====================================================================================
+# Main
+# =====================================================================================
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    real = resolve_real_transcoder_path()
+
+    # Safety: If we cannot resolve the real transcoder, there's no point continuing.
+    if not os.path.exists(real):
+        log("ERROR", f"Real transcoder not found at '{real}'. Check REAL_TRANSCODER_PATH / rename suffix.")
+        sys.exit(1)
+
+    # Scope limiter: avoid touching non-streaming jobs.
+    if ONLY_INTERCEPT_STREAMING_TRANSCODES and not is_streaming_transcode(args):
+        exec_real_transcoder(real, args)
+        return
+
+    input_file, input_idx = find_primary_input(args)
+    if not input_file or input_idx < 0:
+        # We can't identify the primary video input; pass through.
+        exec_real_transcoder(real, args)
+        return
+
+    if SKIP_WHEN_VIDEO_CODEC_COPY and video_codec_is_copy(args, input_idx):
+        exec_real_transcoder(real, args)
+        return
+
+    # Parse required input stream indices from the args (for safe swapping).
+    req_stream_max = required_max_input_stream_index(args)
+
+    # Cache fast-path.
+    if ENABLE_CACHE:
+        cache = _load_cache()
+        ce = cache.get(input_file)
+        if ce and ce.fallback_file:
+            if not os.path.exists(ce.fallback_file):
+                log("DEBUG", "Cache hit but fallback file no longer exists; ignoring")
+            elif REQUIRE_STREAM_INDEX_COMPATIBILITY and req_stream_max is not None:
+                if ce.fallback_max_stream_index is None or ce.fallback_max_stream_index < req_stream_max:
+                    log("DEBUG", "Cache hit but stream compatibility is insufficient; ignoring")
+                else:
+                    log("INFO", f"Cache hit: swapping input -> {os.path.basename(ce.fallback_file)}")
+                    args[input_idx] = ce.fallback_file
+                    swapped_to_sdr = (classify_dynamic_range(ce.fallback_dr) == "SDR")
+                    final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+                    exec_real_transcoder(real, final_args)
+                    return
+            else:
+                log("INFO", f"Cache hit: swapping input -> {os.path.basename(ce.fallback_file)}")
+                args[input_idx] = ce.fallback_file
+                swapped_to_sdr = (classify_dynamic_range(ce.fallback_dr) == "SDR")
+                final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+                exec_real_transcoder(real, final_args)
                 return
 
-        # 2. CHECK FOR INPUT FILE
-        if arg == '-i':
-            if (i + 1) < len(original_args):
-                val = original_args[i+1]
-                if val.lower().endswith(VIDEO_EXTENSIONS):
-                    input_file = val
-                    input_index = i + 1
-    
-    # --- PHASE 2: WATERFALL LOGIC ---
-    swap_occurred = False
-    if input_file:
-        item = get_plex_metadata_by_file(input_file)
-        
-        if item:
-            sibling_file, sibling_res, should_swap = find_waterfall_candidate(item, input_file)
-            
-            if should_swap:
-                if sibling_file:
-                    log(f"Waterfall Success: Swapping to {sibling_res}p version -> {os.path.basename(sibling_file)}")
-                    original_args[input_index] = sibling_file
-                    swap_occurred = True
-                else:
-                    log("Waterfall Failed: Input is 4K, but no fallback found.")
-                    if KILL_TRANSCODE_IF_NO_FALLBACK:
-                        log("Policy Enforcement: KILLING STREAM.")
-                        sys.exit(1)
+    # Lookup item by file path.
+    found = plex_find_item_by_file(input_file)
+    if not found:
+        log("WARNING", f"Plex lookup failed for input file: {input_file}")
+        if KILL_TRANSCODE_IF_UNSURE:
+            log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
+            sys.exit(1)
+        exec_real_transcoder(real, args)
+        return
 
-    # --- PHASE 3: OPTIMIZE ---
-    final_args = clean_arguments_for_optimization(original_args, swap_occurred)
+    rating_key, search_item = found
 
-    # --- PHASE 4: EXECUTE ---
-    execute_real_transcoder(final_args)
+    # -----------------------------------------------------------------------------
+    # Fast path: if the search response is already enough to tell us this is NOT protected, skip the more expensive full-metadata fetch.
+    # -----------------------------------------------------------------------------
+    if FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED:
+        current_quick = find_current_media(search_item, input_file)
+        if current_quick and current_quick.height is not None:
+            if (not is_protected_source(current_quick)) and (not args_indicate_hdr_tonemap(args)):
+                exec_real_transcoder(real, args)
+                return
+
+    # Fetch full metadata (streams / dynamic range). This is what makes swap decisions accurate.
+    full_item = plex_fetch_full_metadata(rating_key)
+    if not full_item:
+        log("WARNING", f"Could not fetch full metadata for ratingKey={rating_key}")
+        if KILL_TRANSCODE_IF_UNSURE:
+            log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
+            sys.exit(1)
+        exec_real_transcoder(real, args)
+        return
+
+    current = find_current_media(full_item, input_file)
+    if not current:
+        log("WARNING", "Could not match current media in full metadata")
+        if KILL_TRANSCODE_IF_UNSURE:
+            log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
+            sys.exit(1)
+        exec_real_transcoder(real, args)
+        return
+
+    protected = is_protected_source(current)
+    if (not protected) and (current.dyn_range_class == "UNKNOWN") and args_indicate_hdr_tonemap(args):
+        # Plex is tonemapping, so treat the source as HDR even if metadata didn't say so.
+        protected = True
+
+    if not protected:
+        exec_real_transcoder(real, args)
+        return
+
+    log(
+        "INFO",
+        f"Protected source detected: height={current.height} dyn_range={current.dyn_range_class} "
+        f"file={os.path.basename(current.file_path)}",
+    )
+
+    fallback = pick_best_fallback(full_item, current, req_stream_max)
+    if not fallback:
+        log("WARNING", "No compliant fallback version found (or none passed stream safety checks)")
+        if KILL_TRANSCODE_IF_NO_FALLBACK:
+            log("ERROR", "Policy: killing protected transcode (KILL_TRANSCODE_IF_NO_FALLBACK=1)")
+            sys.exit(1)
+        exec_real_transcoder(real, args)
+        return
+
+    # Swap input to the fallback file.
+    args[input_idx] = fallback.file_path
+    swapped_to_sdr = (fallback.dyn_range_class == "SDR")
+
+    log(
+        "INFO",
+        f"Waterfall swap: {current.height}p/{current.dyn_range_class} -> {fallback.height}p/{fallback.dyn_range_class} "
+        f"({os.path.basename(fallback.file_path)})",
+    )
+
+    # Update cache.
+    if ENABLE_CACHE:
+        cache = _load_cache()
+        cache[input_file] = CacheEntry(
+            ts=time.time(),
+            rating_key=rating_key,
+            fallback_file=fallback.file_path,
+            fallback_height=fallback.height,
+            fallback_dr=fallback.dyn_range,
+            fallback_max_stream_index=fallback.max_stream_index,
+        )
+        _save_cache(cache)
+
+    # Rewrite args for performance and exec.
+    final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+    exec_real_transcoder(real, final_args)
+
 
 if __name__ == "__main__":
     main()
-
-

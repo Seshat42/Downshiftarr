@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Downshiftarr v0.7.1
+Downshiftarr v0.7.2
 By Seshat42
 
 Plex 4K/HDR/DV transcode guard (fail-closed by default) with best-effort auto-downshift.
@@ -11,7 +11,7 @@ What it does
 ------------
 Downshiftarr is meant to be called by a Tautulli "Script" notification agent.
 
-When a client is VIDEO-transcoding a high-quality source (4K and/or HDR/DV), Downshiftarr will:
+When a client is VIDEO transcoding a high-quality source (4K and/or HDR/DV), Downshiftarr will:
 
 1) Identify the active Plex session (best-effort, with retries).
 2) Confirm which version is *actually* being played using Plex session metadata (source-of-truth).
@@ -37,7 +37,7 @@ Triggers:
 Condition:
 - Video Decision is Transcode
 
-Arguments (flag mode; safest when values might be blank or include spaces):
+Arguments (flag mode):
 - --rating-key={rating_key} --machine-id={machine_id} --username="{username}" --session-id={session_id} --user-id={user_id} --video-resolution={video_resolution} --stream-video-resolution={stream_video_resolution} --video-decision={video_decision} --video-dynamic-range={video_dynamic_range} --session-key={session_key}
 
 Legacy Arguments (positional mode; simplest, but can fail):
@@ -213,7 +213,6 @@ TAUTULLI_LOG_SUBJECT = env_str("TAUTULLI_LOG_SUBJECT", "Downshiftarr")
 EXEMPT_USERS = env_csv_set("EXEMPT_USERS", "")
 
 MAX_ALLOWED_HEIGHT = env_int("MAX_ALLOWED_HEIGHT", 2000) or 2000  # <2000 ~= avoid 2160p
-# Keep v0.7.0 default ordering unless user overrides.
 PREFER_HEIGHTS = tuple(
     int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480").split(",") if x.strip().isdigit()
 ) or (1080, 720, 576, 480)
@@ -615,7 +614,7 @@ def pick_best_fallback_media_index(
     """
     Choose the best fallback media index.
 
-    Default v0.7.0 behavior: SDR-only and < MAX_ALLOWED_HEIGHT.
+    Default behavior: SDR-only and < MAX_ALLOWED_HEIGHT.
 
     Eligibility:
       - Exclude the currently selected media
@@ -648,14 +647,14 @@ def pick_best_fallback_media_index(
     #   pass 2: allow HDR/DV (optional)
     passes: List[Tuple[str, bool]] = []
     if FALLBACK_SDR_ONLY:
-        # Strict mode (v0.7.0): only consider SDR candidates.
+        # Strict mode: only consider SDR candidates.
         passes = [("SDR_ONLY", True)]
     else:
         if ALLOW_HDR_FALLBACK:
             # Prefer SDR if possible, but allow HDR/DV if no SDR fallback exists.
             passes = [("SDR_PREFERRED", True), ("ALLOW_HDR", False)]
         else:
-            # Looser mode: allow HDR/DV candidates immediately (still under MAX_ALLOWED_HEIGHT).
+            # Loose mode: allow HDR/DV candidates immediately (still under MAX_ALLOWED_HEIGHT).
             passes = [("ALLOW_HDR_ONLY", False)]
 
     for pass_name, sdr_only in passes:
@@ -837,7 +836,7 @@ def find_client(plex, ctx: SessionContext, fallback_machine_id: Optional[str]):
         except Exception:
             pass
 
-    # 3) Proxy-only PlexClient with just the identifier (no direct connection required)
+    # 3) Proxy only PlexClient with just the identifier (no direct connection required)
     try:
         from plexapi.client import PlexClient  # type: ignore
         for tid in target_ids:
@@ -1168,5 +1167,21 @@ if __name__ == "__main__":
         raise
     except Exception as e:
         # Absolute last-ditch safety net.
-        log_event("CRITICAL", "Unexpected error: %s" % e, ev=None, ctx=None)
+        #
+        # If something blows up outside the normal control flow, we still try to enforce the policy.
+        # We intentionally "fail closed" here: if the event looks like a protected transcode and KILL_ON_UNEXPECTED_ERROR is enabled, we attempt termination via every available path.
+        try:
+            ev = parse_args(sys.argv)
+        except Exception:
+            ev = None
+
+        log_event("CRITICAL", "Unexpected error: %s" % e, ev=ev, ctx=None)
+
+        if KILL_ON_UNEXPECTED_ERROR and ev is not None:
+            try:
+                # No Plex handle in this context; terminate_best_effort will try Tautulli first, then fall back to any direct Plex termination paths it can.
+                terminate_best_effort(None, ev, None, KILL_MESSAGE_UNEXPECTED_ERROR)
+            except Exception:
+                pass
+
         sys.exit(1)

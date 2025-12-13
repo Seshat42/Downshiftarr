@@ -1,25 +1,25 @@
-Information to explain how the "Plex Transcoder" file is to be used will be added soon.
-
-The full solution is going to end up requiring use of the Plex Transcoder file. The reason is because the Plex devs have been destroying their app ecosystem with the new shitperience apps, as well as some of the smartTV apps can still misbehave.
 
 # Downshiftarr
 
 Downshiftarr is a **Plex 4K/HDR/DV transcode guard** designed to be run from a **Tautulli “Script” notification**.
 
-When a client tries to **VIDEO transcode** a protected source (4K and/or HDR/DV), Downshiftarr will:
+It can be deployed in two ways:
 
-1. Find the active Plex session (best-effort, with short retries).
-2. Determine what version is *actually being played* from Plex session metadata (the source of truth).
-3. Attempt to **switch** the client to a compliant version (typically **≤1080p SDR**).
-4. If switching can’t be done safely/reliably, it will **enforce** the policy by terminating the stream (configurable).
+1) **Downshiftarr.py only** (works anywhere you can run Tautulli script notifications)
+   - This is the right choice for restricted environments where you *don’t* have Docker / root access and therefore *cannot* replace the Plex transcoder binary.
 
-The script is built to be fast (early exits; minimal calls) and robust (multiple fallbacks; fail-closed by default).
+2) **Full enforcement (recommended): “Plex Transcoder” shim + Downshiftarr.py**
+   - The **Plex Transcoder shim** is the **first line of defense**. It runs at the exact moment Plex spawns a transcode job and can **swap the input file** to a compliant version *before the first segment is created*.
+   - **Downshiftarr.py** remains the **second line of defense** (Tautulli-driven session enforcement, client switching, termination). Even with the shim installed, **Downshiftarr.py is still required for best results / full compliance**.
+
+Why two layers? Plex clients (especially some smart TV apps) can be....creatively non-compliant. The shim prevents expensive 4K/HDR transcodes from even starting, while Downshiftarr.py handles session-level reality (what’s actually being played, what the client will accept, and how to terminate if needed).
 
 ---
 
 ## Contents
 
 - [How it works](#how-it-works)
+- [Plex Transcoder shim](#plex-transcoder-shim)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Tautulli setup](#tautulli-setup)
@@ -44,6 +44,98 @@ If it’s protected **and** video is being transcoded:
 - Pick the best fallback version under the threshold (and typically SDR).
 - Remote-control the client via plexapi (`playMedia` + `seekTo` fallbacks).
 - If downshift fails → terminate the session (Tautulli first; Plex fallback).
+
+The optional **Plex Transcoder shim** runs *before* Downshiftarr.py ever gets an event:
+
+- Plex spawns `Plex Transcoder` → the shim executes.
+- The shim detects whether the transcode input is “protected” (4K-ish and/or HDR/DV).
+- If protected, it tries to **waterfall** to a compliant sibling version (e.g. 1080p SDR).
+- If no safe sibling is available, it can **fail-closed** immediately so the protected transcode never starts.
+
+Think of it like the movie theater ticket window (shim) + the usher who tears your ticket stub (Downshiftarr.py).
+
+---
+
+## Plex Transcoder shim
+
+**`Plex Transcoder`** (note the space) is a Python shim intended to replace the real Plex binary on Linux.
+
+### What the shim does
+
+- Acts as the **first line of defense** against 4K/HDR/DV video transcodes.
+- Runs **synchronously** at transcode spawn time.
+- Uses Plex’s local API to locate the media item and its available versions.
+- If the source is “protected”, it swaps the transcoder’s `-i <input file>` to a compliant sibling version.
+- Optionally rewrites HDR tone-mapping filters when swapping to SDR to avoid wasted CPU and potential SDR color damage.
+
+### Important constraints
+
+- The shim does **not** know session/user/client context the way Downshiftarr.py does.
+- The shim should be treated as a **pre-flight guard**, not the whole enforcement system.
+- For best results **use the shim *and* Downshiftarr.py together**.
+
+### Installation (Linux / Docker)
+
+This is an advanced install. Rollback plan is provided below.
+
+1) **Locate** your Plex transcoder binary.
+   - Common location on Linux: `/usr/lib/plexmediaserver/Plex Transcoder`
+
+2) **Stop Plex Media Server**.
+
+3) **Rename the real transcoder** (keep the name the shim expects):
+
+```bash
+cd /usr/lib/plexmediaserver
+mv "Plex Transcoder" "Plex Transcoder_REAL"
+```
+
+4) **Copy this repo’s shim into place** as the new `Plex Transcoder` and make it executable:
+
+```bash
+cp "/path/to/Downshiftarr/Plex Transcoder" "/usr/lib/plexmediaserver/Plex Transcoder"
+chmod +x "/usr/lib/plexmediaserver/Plex Transcoder" "/usr/lib/plexmediaserver/Plex Transcoder_REAL"
+```
+
+5) **Ensure Python 3 exists in the environment where Plex runs.**
+   - If Plex runs in Docker, Python must exist **inside the container**.
+
+6) **Configure the shim** by editing the config block at the top of the `Plex Transcoder` file.
+
+7) **Start Plex Media Server**.
+
+### Rollback
+
+If anything goes sideways:
+
+```bash
+cd /usr/lib/plexmediaserver
+mv "Plex Transcoder" "Plex Transcoder_SHIM_BROKEN"
+mv "Plex Transcoder_REAL" "Plex Transcoder"
+```
+
+### Shim configuration
+
+All shim configuration is set **inside the shim file**. No `.env` is used.
+
+Key settings you’ll care about first:
+
+- `PLEX_URL` – usually `http://127.0.0.1:32400` inside the Plex container/host.
+- `PLEX_TOKEN` – can be left blank; the shim will try to use `X_PLEX_TOKEN` from Plex’s environment.
+- `MAX_ALLOWED_HEIGHT` – default `2000` (treats ~2160p as protected).
+- `MAX_FALLBACK_HEIGHT` – default `1080`.
+- `PREFER_HEIGHTS` – default `(1080, 720, 576, 480)`.
+- `FALLBACK_SDR_ONLY` – default `True` (recommended).
+- `KILL_TRANSCODE_IF_NO_FALLBACK` – default `True` (strict compliance).
+- `KILL_TRANSCODE_IF_UNSURE` – default `True` (strict compliance).
+
+There are additional options for:
+
+- stream layout safety checks (`REQUIRE_STREAM_INDEX_COMPATIBILITY`)
+- caching (`ENABLE_CACHE`, `CACHE_TTL_S`)
+- performance tweaks (`STRIP_HDR_TONEMAP_FILTERS`, `REMOVE_BITRATE_LIMITS`)
+
+Keep these values aligned with `Downshiftarr.env` so both layers agree on what to enforce.
 
 ---
 
@@ -298,4 +390,5 @@ Set:
 ```text
 VERBOSE=1
 ```
-Then reproduce the issue and inspect the log file.
+- Then reproduce the issue and inspect the log file.
+- Submit an issue here on GitHub with your logs and description.

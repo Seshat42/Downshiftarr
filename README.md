@@ -1,6 +1,4 @@
-Information to explain how the "Plex Transcoder" file is to be used will be added soon.
-
-The full solution is going to end up requiring use of the Plex Transcoder file. The reason is because the Plex devs have been destroying their app ecosystem with the new shitperience apps, as well as some of the smartTV apps can still misbehave.
+Check out the dev branch.
 
 # Downshiftarr
 

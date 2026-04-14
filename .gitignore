@@ -1,0 +1,4 @@
+.coverage
+__pycache__
+downshiftarr.log
+tests/__pycache__

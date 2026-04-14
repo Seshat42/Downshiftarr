@@ -875,7 +875,7 @@ def plex_terminate_session(session_item: Optional[Any], session_id: Optional[str
 
     We try two approaches:
       1) session_item.stop(reason=...) (plexapi convenience)
-      2) direct call to /status/sessions/terminate?sessionId=...&reason=...&X-Plex-Token=...
+      2) direct call to /status/sessions/terminate?sessionId=...&reason=... (token in header)
 
     This is best-effort and will not throw.
     """
@@ -900,8 +900,9 @@ def plex_terminate_session(session_item: Optional[Any], session_id: Optional[str
             sid = sid.split("token=", 1)[-1].strip()
 
         url = "%s/status/sessions/terminate" % PLEX_URL.rstrip("/")
-        params = {"sessionId": sid, "reason": reason, "X-Plex-Token": PLEX_EFFECTIVE_TOKEN}
-        r = PLEX_HTTP.get(url, params=params, timeout=HTTP_TIMEOUT_S)
+        params = {"sessionId": sid, "reason": reason}
+        headers = {"X-Plex-Token": PLEX_EFFECTIVE_TOKEN}
+        r = PLEX_HTTP.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT_S)
         # Plex often returns 200 with an empty body on success.
         if 200 <= r.status_code < 300:
             return True

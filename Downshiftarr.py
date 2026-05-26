@@ -768,6 +768,8 @@ def find_session(plex, ev: InputEvent) -> Optional[SessionContext]:
                                         str(pproduct) if pproduct is not None else None,
                                         str(paddr) if paddr is not None else None,
                                         str(pport) if pport is not None else None)
+                    if best_score == 0:
+                        break
 
             if best_payload is not None:
                 s, sk, sid, uname, mid, ptitle, pproduct, paddr, pport = best_payload

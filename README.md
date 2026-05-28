@@ -13,8 +13,6 @@ It can be deployed in two ways:
 
 Why two layers? Plex clients (especially some smart TV apps) can be....creatively non-compliant. The shim prevents expensive 4K/HDR transcodes from even starting, while Downshiftarr.py handles session-level reality (what’s actually being played, what the client will accept, and how to terminate if needed).
 
-> Development note: as of the 2026-05-28 single-main consolidation, all branch and PR content is intended to live on
-> `main`. Keep future work on explicit feature branches and do not recreate root test files that differ only by case.
 
 ---
 

@@ -176,7 +176,13 @@ The repository is maintained WSL-first. From the project root:
 python scripts/testing/verify_local.py
 ```
 
-GitHub is used only as the `origin` remote for repository storage. Verification is local and WSL-first.
+GitHub is used for repository storage, security CI, code scanning, secret protection, and daily releases. Real Plex/Tautulli/Loki proof remains local and WSL/Windows guarded; GitHub Actions never receive local service secrets.
+
+CI mirrors the local gate with:
+
+```bash
+python scripts/testing/verify_local.py --ci
+```
 
 Testing docs:
 

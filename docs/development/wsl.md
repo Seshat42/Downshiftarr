@@ -16,12 +16,12 @@ Work from the existing checkout unless the lane explicitly says otherwise. This
 workspace is shared, so inspect status before editing and never revert unrelated
 changes.
 
-## Remote Storage
+## GitHub And Local Verification
 
-GitHub is used only as the `origin` remote for repository storage. Do not rely on any remote platform
-feature beyond plain Git fetch and push.
+GitHub is approved for repository storage, security CI, code scanning, secret protection, and daily releases.
+Do not add GitHub-hosted Plex, Tautulli, Loki, browser, or local test secrets.
 
-Use plain Git remote-storage checks when needed:
+Use plain Git remote checks when needed:
 
 ```bash
 git remote -v
@@ -46,6 +46,7 @@ Run the focused proof first, then broaden before closeout:
 
 ```bash
 python scripts/testing/verify_local.py
+python scripts/testing/verify_local.py --ci
 ```
 
 For docs-only lanes, at minimum verify repository state and the intended file

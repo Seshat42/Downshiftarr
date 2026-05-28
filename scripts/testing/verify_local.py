@@ -38,9 +38,9 @@ def missing_required_tools(gitleaks_bin: str | None = None) -> list[str]:
     return missing
 
 
-def build_gates(python_version: str = "3.12", gitleaks_bin: str | None = None) -> list[Gate]:
+def build_gates(python_version: str = "3.12", gitleaks_bin: str | None = None, ci: bool = False) -> list[Gate]:
     gitleaks = gitleaks_bin or resolve_gitleaks_bin()
-    return [
+    gates = [
         Gate("status", ["git", "status", "--short", "--branch", "--untracked-files=all"]),
         Gate("sync", ["uv", "sync", "--all-groups", "--python", python_version, "--locked"]),
         Gate("tests-non-destructive", ["uv", "run", "--locked", "pytest", "-m", "not loki and not browser and not destructive"]),
@@ -67,8 +67,11 @@ def build_gates(python_version: str = "3.12", gitleaks_bin: str | None = None) -
         ),
         Gate("gitleaks", [gitleaks, "detect", "--source", ".", "--config", ".gitleaks.toml", "--no-banner", "--redact"]),
         Gate("plex-token-query-static-check", [sys.executable, str(Path(__file__).relative_to(REPO_ROOT)), "--static-token-check-only"]),
-        Gate("diff-check", ["git", "diff", "--check"]),
     ]
+    if ci:
+        gates.append(Gate("secret-hygiene", [sys.executable, "scripts/testing/verify_secret_hygiene.py"]))
+    gates.append(Gate("diff-check", ["git", "diff", "--check"]))
+    return gates
 
 
 def source_paths() -> list[Path]:
@@ -103,6 +106,7 @@ def run_gate(gate: Gate) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", default="3.12", help="Python version passed to uv sync.")
+    parser.add_argument("--ci", action="store_true", help="Run CI-only repository hygiene checks in addition to local gates.")
     parser.add_argument("--static-token-check-only", action="store_true", help="Run only the Plex token transport static check.")
     args = parser.parse_args(argv)
 
@@ -115,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Install them locally or set GITLEAKS_BIN to an executable gitleaks path.", file=sys.stderr)
         return 127
 
-    for gate in build_gates(python_version=args.python):
+    for gate in build_gates(python_version=args.python, ci=args.ci):
         result = run_gate(gate)
         if result != 0:
             print(f"Local verification failed at gate: {gate.name}", file=sys.stderr)

@@ -6,6 +6,11 @@ regexes = [
     '''PUT_YOUR_[A-Z_]+_HERE''',
     '''YOUR_[A-Z_]+(_HERE)?''',
     '''replace-with-[a-z0-9-]+''',
+    '''secret-token''',
+    '''api-secret''',
+    '''generated-key''',
+    '''configure_config_ini''',
+    '''tautulli_manager''',
 ]
 
 [[rules]]

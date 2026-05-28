@@ -10,16 +10,19 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Workspace: `C:\Users\D3\Documents\Downshiftarr`.
 - WSL path: `/mnt/c/Users/D3/Documents/Downshiftarr`.
 - Authoritative branch: `main`.
-- Remote storage: GitHub may be used only as the `origin` Git remote for fetch and push storage.
-- Remote-hosted automation on the storage host was disabled on 2026-05-28; local verification remains authoritative.
+- GitHub may be used for repository storage, security CI, code scanning, secret protection, and daily release publication.
+- Remote-hosted automation was re-approved on 2026-05-28 for security and release workflows only; local verification remains authoritative for local runtime proof.
+- GitHub Actions repository settings on 2026-05-28: Actions enabled, allowed actions set to selected, GitHub-owned and verified actions allowed, `astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9` explicitly allowed, default workflow token permissions set to read-only.
+- GitHub security settings on 2026-05-28: secret scanning enabled, push protection enabled, Dependabot security updates enabled. Non-provider/generic secret scanning and validity checks remained disabled after API patch attempts and may require UI/account-level availability.
 - The workspace is shared with other agents or user edits; never revert others' work.
 - Always inspect `git status --short --branch` before editing.
 
 ### Operating Decisions
 
 - Work WSL-first for development, tests, lint, and security checks.
-- Use local verification only; do not depend on any remote platform feature beyond plain Git fetch and push.
-- Official all-up verification command: `python scripts/testing/verify_local.py`.
+- Use GitHub Actions only for security CI, code scanning, secret protection, and daily releases. Do not add unrelated remote automation without a new user decision.
+- Official all-up local verification command: `python scripts/testing/verify_local.py`.
+- Official CI mirror command: `python scripts/testing/verify_local.py --ci`.
 - Keep `AGENTS.md`, docs, and this file current when operating rules or durable decisions change.
 - Ask for clarification when requirements, ownership, risk, or expected behavior are uncertain.
 - Use subagents for independent lanes when available and useful.
@@ -39,6 +42,7 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - The optional shim remains privileged because it runs in the Plex transcode path.
 - Real tokens belong only in ignored local env files or deployment environment variables.
 - Logs, screenshots, scan output, generated media manifests, and proof artifacts must not contain secrets.
+- GitHub Actions must not receive Plex, Tautulli, Loki, browser, or local test secrets. CI uses synthetic placeholders only.
 
 ### Robust Test Environment
 
@@ -72,7 +76,13 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - A: Yes, but only for the dedicated Loki generated-media test lane after `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1` is set in ignored local config.
 
 - Q: Should remote automation or remote code scanning run for this repo?
-- A: No. The user explicitly decided GitHub is remote repository storage only. Verification is local.
+- A: Updated on 2026-05-28. Yes, but only for security CI, code scanning, secret protection, and daily releases. Real local-service proof remains local.
+
+- Q: How often should GitHub releases be created?
+- A: At most one release per America/New_York day, created by the nightly workflow only when `main` changed since the previous release. Tags use `daily-YYYY-MM-DD`; old version tags are preserved.
+
+- Q: May GitHub Actions receive real local integration credentials?
+- A: No. Plex, Tautulli, Loki, browser, Docker sidecar, and local test secrets stay out of GitHub. Hosted workflows run synthetic and repository-only checks.
 
 - Q: How are smart TV and other client behaviors covered without every device present?
 - A: The simulated harness models Plex Web, Roku, Apple TV, Android TV/Fire TV, Chromecast, Samsung Tizen, LG webOS, consoles, mobile, Plex HTPC, relay, and unknown clients. Real devices can be added as follow-up proof, but deterministic simulated coverage comes first.

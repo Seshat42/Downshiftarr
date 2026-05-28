@@ -28,6 +28,17 @@ def test_build_gates_include_official_local_verification_sequence():
     assert gates[9].command[:3] == ["gitleaks", "detect", "--source"]
 
 
+def test_build_gates_adds_ci_hygiene_when_requested():
+    gates = verify_local.build_gates(python_version="3.12", gitleaks_bin="gitleaks", ci=True)
+
+    assert [gate.name for gate in gates][-3:] == [
+        "plex-token-query-static-check",
+        "secret-hygiene",
+        "diff-check",
+    ]
+    assert gates[-2].command == [verify_local.sys.executable, "scripts/testing/verify_secret_hygiene.py"]
+
+
 def test_missing_tool_detection_reports_required_tools(monkeypatch):
     monkeypatch.delenv("GITLEAKS_BIN", raising=False)
     monkeypatch.setattr(verify_local.shutil, "which", lambda tool: None if tool in {"git", "uv", "gitleaks"} else f"/usr/bin/{tool}")
@@ -70,7 +81,7 @@ def test_main_stops_at_first_failing_gate(monkeypatch):
     gates = [verify_local.Gate("first", ["true"]), verify_local.Gate("second", ["false"])]
     calls = []
     monkeypatch.setattr(verify_local, "missing_required_tools", lambda: [])
-    monkeypatch.setattr(verify_local, "build_gates", lambda python_version: gates)
+    monkeypatch.setattr(verify_local, "build_gates", lambda python_version, ci=False: gates)
 
     def fake_run_gate(gate):
         calls.append(gate.name)

@@ -58,6 +58,7 @@ Any deployment that disables a `KILL_ON_*` toggle must document the reason, expe
 Required gates for security-sensitive changes:
 
 - Official all-up runner: `python scripts/testing/verify_local.py`.
+- CI mirror runner: `python scripts/testing/verify_local.py --ci`.
 - Unit and simulated tests through pytest.
 - Ruff lint and format checks through the repo `pyproject.toml`.
 - Dependency audit through `pip-audit`.
@@ -68,6 +69,19 @@ Required gates for security-sensitive changes:
 - Regression tests for token redaction in logging and notification paths.
 - A targeted check that Plex direct API fallbacks and shim API calls do not send `X-Plex-Token` in query parameters.
 - Artifact review proving scan outputs do not include raw env files, full secrets, or unrestricted logs.
+
+## GitHub Security CI
+
+GitHub is approved for security CI, code scanning, secret protection, and daily release publication.
+
+Baseline controls:
+
+- GitHub Actions must not define or consume Plex, Tautulli, Loki, browser, or local test secrets.
+- Workflow token permissions must be least-privilege; release publication is the only routine job that needs `contents: write`.
+- CI must not contact Loki, Tautulli, Plex Web, browser sessions, or local Docker sidecars.
+- Security CI must run full-history Gitleaks, dependency audit, Ruff, tests, Bandit, CodeQL, tracked-file secret hygiene, and Plex token query-string checks.
+- Release jobs must publish only sdist, wheel, checksums, and GitHub provenance attestations.
+- Release artifact verification must reject env files, logs, generated media, screenshots, scan outputs, Tautulli config/database files, and token-looking values.
 
 ## Local Loki Test Rig
 
@@ -112,7 +126,8 @@ Artifact rules:
 - Plex token-in-header behavior remains present in `Downshiftarr.py` and `Plex Transcoder`.
 - All `KILL_ON_*` defaults remain fail-closed unless a documented exception exists.
 - Logs have redaction coverage and bounded retention.
-- Local verification gates pass and artifacts follow the layout above.
+- Local verification gates and GitHub security CI pass; artifacts follow the layout above.
+- Daily release artifacts contain only sdist, wheel, checksums, and provenance attestations.
 - Optional `Plex Transcoder` shim deployment is separately approved and rollback-tested.
 
 ## Next Priorities

@@ -19,6 +19,7 @@ Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security bound
 - The optional `Plex Transcoder` shim, which can run in the Plex transcoder execution path.
 - Logs written to `LOG_FILE`, stderr captured by Tautulli, and optional Tautulli notification history.
 - Local test and scan artifacts used to prove policy and secret-handling behavior.
+- GitHub-hosted security CI, code-scanning output, and daily release artifacts.
 
 ## Assets
 
@@ -39,6 +40,7 @@ Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security bound
 - Plex/Tautulli HTTP APIs are trusted only over the configured local or private network path. Do not expose unauthenticated or token-bearing endpoints publicly.
 - The `Plex Transcoder` shim is a high-privilege local integration point because Plex invokes it while handling playback.
 - The Loki test rig is a separate local-only trust boundary. Real integration tests must prove the loopback Plex identity before any mutation and must never target Bragi, TooB, relay, or external Plex URLs.
+- GitHub Actions is a hosted automation boundary. It may run synthetic security checks and publish release artifacts, but it must not receive local Plex/Tautulli/Loki credentials or contact real local services.
 
 ## Primary Threats
 
@@ -106,6 +108,7 @@ Controls:
 - A permissive `KILL_ON_*` configuration silently turns protected-transcode enforcement into observe-only behavior.
 - A local proof artifact accidentally captures env files or logs with secrets.
 - A developer accidentally points destructive tests at a production or external Plex server. The Loki guard rejects non-loopback URLs and unexpected machine identifiers to fail closed before library refresh or session enforcement.
+- A hosted workflow accidentally packages ignored local files, release proof logs, generated media, screenshots, or env files. CI artifact hygiene and release artifact verification must fail before publication.
 
 ## Next Security Priorities
 

@@ -25,6 +25,9 @@ downshiftarr_plex_transcoder_cache.json
 
 # Local/generated test rig output
 artifacts/
+build/
+dist/
+release-notes.md
 playwright-report/
 test-results/
 

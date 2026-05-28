@@ -72,3 +72,28 @@ Open issues:
 - Treat `dev` as historical/stale until its two commits ahead of `main` are inspected and either recovered, superseded, or intentionally retired.
 - Merged branch refs #4 and #6 are cleanup candidates only after branch retention policy and remote deletion authority are explicitly confirmed.
 - Issue #3 should be routed separately from branch consolidation because Docker packaging can create product/runtime policy decisions beyond branch hygiene.
+
+## Single-Main Consolidation Record
+
+Consolidation date: 2026-05-28  
+Temporary branch: `codex/consolidate-all-branches`  
+Starting commit: local `main` at `9749e87` (`chore: bootstrap Downshiftarr office`)  
+Remote baseline verified before merging: `origin/main` at `2b3cfa0`
+
+The user explicitly authorized this phase after bootstrap: merge all branch and PR content into one `main`, push to GitHub, clear open PRs, and delete every non-`main` remote branch.
+
+Merged content:
+
+| Source | PR | Merge commit | Final disposition |
+| --- | ---: | --- | --- |
+| `dev` | n/a | `032d710` | Included newer shim and README shim docs; security-adjusted shim token transport to headers. |
+| `fix-plex-token-exposure-14819038041623419576` | #10 | `adee13c` | Included header-based Plex token transport in `Downshiftarr.py` and preserved the equivalent shim behavior. |
+| `fix-unused-annotations-import-14675292598164734863` | #11 | `2849525` | Included import cleanup in `Downshiftarr.py`. |
+| `add-tests-media-height-4449859519764339005` | #9 | `39580ee` | Ported tests to `tests/test_media_height.py`. |
+| `jules-8496729870724669652-24d2ecea` | #7 | `3b04a2b` | Ported `is_high_quality` tests to `tests/test_quality_classification.py`. |
+| `jules-10351953059055018286-c854910a` | #12 | `deae9ec` | Ported `classify_dynamic_range` tests to `tests/test_quality_classification.py`. |
+| `jules-16002624577278156886-445e8c56` | #8 | `d2c38d8` | Ported `safe_int` tests to `tests/test_helpers.py`. |
+| `testing-improvement-parse-resolution-hint-11289850538183556530` | #5 | `92e2552` | Ported helper parsing tests to `tests/test_helpers.py`; dropped generated cache/log artifacts. |
+| `jules-311580304402418888-ae638ed7` | #14 | `fc0045a` | Ported `env_bool` tests to `tests/test_helpers.py`. |
+
+Already-integrated branches `optimize-session-search-early-exit-10951549358986469248` and `test-normalize-decision-8116256256308464572` remain cleanup-only branches. They should be deleted with the other non-`main` remote refs after `origin/main` contains the consolidation.

@@ -51,3 +51,23 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Standard bootstrap gates: `uv sync --all-groups`, `uv run pytest`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pip-audit`, Bandit with the committed baseline, Gitleaks, branch-count verification, and `git diff --check`.
 - Record verification commands and outcomes in the final response.
 - Future code lanes must add or update tests appropriate to the changed behavior before claiming completion.
+
+### Single-Main Consolidation
+
+- User instruction: proceed to merge all branches into a single `main`, push to GitHub when complete, integrate and clear all pull requests, then delete every non-`main` remote branch.
+- Temporary work branch: `codex/consolidate-all-branches` from local `main` at `9749e87`.
+- Merge parent record:
+  - `dev` via `032d710`, preserving the newer `Plex Transcoder` shim and README shim documentation.
+  - PR #10 `fix-plex-token-exposure-14819038041623419576` via `adee13c`, with Plex auth moved to `X-Plex-Token` headers in both `Downshiftarr.py` and the newer shim.
+  - PR #11 `fix-unused-annotations-import-14675292598164734863` via `2849525`, removing the unused future annotations import from `Downshiftarr.py`.
+  - PR #9 `add-tests-media-height-4449859519764339005` via `39580ee`, ported to `tests/test_media_height.py`.
+  - PR #7 `jules-8496729870724669652-24d2ecea` via `3b04a2b`, ported to `tests/test_quality_classification.py`.
+  - PR #12 `jules-10351953059055018286-c854910a` via `deae9ec`, ported to `tests/test_quality_classification.py`.
+  - PR #8 `jules-16002624577278156886-445e8c56` via `d2c38d8`, ported to `tests/test_helpers.py`.
+  - PR #5 `testing-improvement-parse-resolution-hint-11289850538183556530` via `92e2552`, ported to `tests/test_helpers.py`; generated `__pycache__/`, `*.pyc`, and `downshiftarr.log` artifacts were dropped.
+  - PR #14 `jules-311580304402418888-ae638ed7` via `fc0045a`, ported to `tests/test_helpers.py`.
+- Q: Should PRs be left open if their content is included manually?
+- A: No. The user asked to integrate and clear all pull requests into the single `main`; use real merge parents where practical, then close any remaining PRs only after verifying their head commits are ancestors of `origin/main`.
+- Q: Should remote non-`main` branches remain after consolidation?
+- A: No. The user authorized deletion of every non-`main` remote branch after the push and PR cleanup. Tags are preserved.
+- Case-safety rule remains active: do not reintroduce root `test_downshiftarr.py` or `test_Downshiftarr.py`; all branch test coverage now lives under lowercase `tests/`.

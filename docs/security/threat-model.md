@@ -44,7 +44,7 @@ Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security bound
 
 Plex and Tautulli tokens grant operational authority over the media server and monitoring plane. They must not be committed, printed, copied into screenshots, or stored in world-readable files.
 
-Known current risk: main still has direct Plex termination using `X-Plex-Token` as a URL query parameter. Query tokens can leak through request logs, reverse proxies, browser/history-style diagnostics, crash dumps, and copied URLs. PR #10 / branch `fix-plex-token-exposure-14819038041623419576` moves this direct Plex fallback token into the `X-Plex-Token` header and should be merged or re-applied after review.
+Consolidation status: PR #10 / branch `fix-plex-token-exposure-14819038041623419576` was incorporated into the single-main merge. Direct Plex termination and the optional shim now send Plex tokens through `X-Plex-Token` headers instead of URL query parameters.
 
 Tautulli API calls still use Tautulli's documented `apikey` query parameter. Treat that as an upstream API constraint and compensate with local/private network exposure, TLS when crossing hosts, strict log redaction, and key rotation after suspected exposure.
 
@@ -56,7 +56,7 @@ Risks:
 
 - A bug can break playback globally.
 - Compromise of the shim or its config can affect every transcode.
-- Token-in-query use in the shim's `/search` call can leak `PLEX_TOKEN`; PR #10 moves that token to a header.
+- Regressions that put Plex tokens back into query strings can leak `PLEX_TOKEN` through request logs, reverse proxies, browser/history-style diagnostics, crash dumps, and copied URLs.
 - Logging media paths, basenames, or API errors may expose library structure.
 
 Minimum controls:
@@ -97,7 +97,7 @@ Controls:
 ## Abuse Cases
 
 - An attacker with read access to `Downshiftarr.env` controls Plex sessions or terminates users' streams.
-- A reverse proxy or debug log captures a Plex token from a query string.
+- A regression or downstream deployment wrapper sends a Plex token in a query string and a reverse proxy or debug log captures it.
 - A malicious local user modifies `Plex Transcoder` and gains execution in the Plex playback path.
 - A noisy debug run leaks session identifiers or media paths to shared logs.
 - A permissive `KILL_ON_*` configuration silently turns protected-transcode enforcement into observe-only behavior.
@@ -105,10 +105,9 @@ Controls:
 
 ## Next Security Priorities
 
-1. Merge or re-apply PR #10 token-in-header remediation for direct Plex calls and the transcoder shim.
-2. Add a central redaction helper and route every log/notification message through it.
-3. Add tests with sentinel secrets proving no token reaches logs, stderr, Tautulli notification payloads, or exception output.
-4. Document and test secure file permissions for `Downshiftarr.env`, log files, and the optional shim.
-5. Add CI secret scanning and artifact hygiene checks.
-6. Add operational alerts for repeated fail-closed termination failures.
-7. Decide whether the `Plex Transcoder` shim remains supported; if yes, give it a separate hardening guide and rollback checklist.
+1. Add a central redaction helper and route every log/notification message through it.
+2. Add tests with sentinel secrets proving no token reaches logs, stderr, Tautulli notification payloads, or exception output.
+3. Document and test secure file permissions for `Downshiftarr.env`, log files, and the optional shim.
+4. Add CI secret scanning and artifact hygiene checks.
+5. Add operational alerts for repeated fail-closed termination failures.
+6. Decide whether the `Plex Transcoder` shim remains supported; if yes, give it a separate hardening guide and rollback checklist.

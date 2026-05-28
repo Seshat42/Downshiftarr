@@ -19,7 +19,7 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - You are not alone in this codebase. Expect other agents or the user to have concurrent edits.
 - Do not revert, overwrite, or normalize edits you did not make unless the user explicitly asks.
 - Before editing, inspect current file state and `git status` so ownership is clear.
-- During bootstrap, do not merge branches. Branch pulling, review, and eventual consolidation into a single `main` must be deliberate and recorded.
+- Do not merge, delete, or rewrite branches unless the user explicitly authorizes the phase. The 2026-05-28 single-main consolidation was explicitly authorized; keep future branch work deliberate and recorded.
 - Keep branch-collision risks visible in `POSTERITY.md`, including active branches, uncommitted files, and any discovered conflicts.
 
 ## Implementation Standards
@@ -43,4 +43,3 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - Record verification commands and results in the final response for each task.
 - If verification cannot be run, state why and record the remaining risk.
 - For docs-only lanes, verify at minimum that only intended documentation files changed, plus any relevant repository state checks.
-

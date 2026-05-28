@@ -15,7 +15,7 @@ This baseline is concise by design. It defines the minimum accepted security pos
 ## Token Transport
 
 - Preferred Plex API transport: send `X-Plex-Token` in the HTTP header.
-- Known risk: main still has a direct Plex termination fallback that sends `X-Plex-Token` as a query parameter. The optional `Plex Transcoder` shim also has token-in-query behavior. PR #10 / `fix-plex-token-exposure-14819038041623419576` addresses these by moving Plex token use to headers.
+- Consolidation status: PR #10 / `fix-plex-token-exposure-14819038041623419576` is incorporated. `Downshiftarr.py` and the optional `Plex Transcoder` shim send Plex tokens through `X-Plex-Token` request headers instead of URL query parameters.
 - Tautulli `api/v2` uses `apikey` as documented by upstream. Keep Tautulli private, avoid proxy logging of query strings, and redact API keys from all artifacts.
 
 ## Plex Transcoder Shim
@@ -64,7 +64,7 @@ Required gates for security-sensitive changes:
 - Secret scan over tracked source and docs.
 - Static check that real tokens are not present in committed files.
 - Regression tests for token redaction in logging and notification paths.
-- A targeted check that Plex direct API fallbacks do not send `X-Plex-Token` in query parameters once PR #10 is merged.
+- A targeted check that Plex direct API fallbacks and shim API calls do not send `X-Plex-Token` in query parameters.
 - Artifact review proving scan outputs do not include raw env files, full secrets, or unrestricted logs.
 
 ## Scan Artifact Layout
@@ -92,7 +92,7 @@ Artifact rules:
 ## Release Checklist
 
 - Security docs reflect current behavior and open risks.
-- PR #10 token-in-header behavior is merged or the release notes explicitly call out token-in-query risk.
+- Plex token-in-header behavior remains present in `Downshiftarr.py` and `Plex Transcoder`.
 - All `KILL_ON_*` defaults remain fail-closed unless a documented exception exists.
 - Logs have redaction coverage and bounded retention.
 - CI gates pass and artifacts follow the layout above.
@@ -100,8 +100,7 @@ Artifact rules:
 
 ## Next Priorities
 
-1. Land the PR #10 token transport fix.
-2. Centralize log redaction and test it with sentinel secrets.
-3. Add CI secret scanning and token-transport checks.
-4. Harden or retire the optional transcoder shim.
-5. Add production runbook entries for token rotation, failed termination alerts, and secure artifact handling.
+1. Centralize log redaction and test it with sentinel secrets.
+2. Add CI secret scanning and token-transport checks.
+3. Harden or retire the optional transcoder shim.
+4. Add production runbook entries for token rotation, failed termination alerts, and secure artifact handling.

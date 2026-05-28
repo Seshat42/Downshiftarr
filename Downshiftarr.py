@@ -106,6 +106,7 @@ Dependencies
 - (optional) python-dotenv
 """
 
+import json
 import logging
 import os
 import re
@@ -204,6 +205,10 @@ LOG_TO_STDERR = env_bool("LOG_TO_STDERR", True)
 LOG_FILE = env_str("LOG_FILE", str(SCRIPT_DIR / "downshiftarr.log"))
 LOG_MAX_BYTES = env_int("LOG_MAX_BYTES", 2_000_000) or 2_000_000
 LOG_BACKUP_COUNT = env_int("LOG_BACKUP_COUNT", 5) or 5
+TELEMETRY_FILE = env_str("TELEMETRY_FILE", "")
+TELEMETRY_ENABLED = env_bool("TELEMETRY_ENABLED", True)
+ENFORCEMENT_MODE = env_str("ENFORCEMENT_MODE", "targeted").lower()
+SHADOW_MODE = env_bool("SHADOW_MODE", ENFORCEMENT_MODE == "shadow")
 
 # Tautulli "logging" (notification) configuration
 TAUTULLI_LOG_NOTIFIER_ID = env_int("TAUTULLI_LOG_NOTIFIER_ID", None)
@@ -321,6 +326,102 @@ def should_tautulli_notify(level_name: str) -> bool:
     if TAUTULLI_LOG_NOTIFIER_ID is None:
         return False
     return level_value(level_name) >= level_value(TAUTULLI_LOG_MIN_LEVEL)
+
+
+def safe_client_family(*values: object) -> str:
+    raw = " ".join(str(v or "") for v in values).lower()
+    if "roku" in raw:
+        return "roku"
+    if "fire" in raw:
+        return "fire_tv"
+    if "shield" in raw:
+        return "nvidia_shield"
+    if "android tv" in raw or "google tv" in raw:
+        return "android_tv"
+    if "android" in raw:
+        return "android"
+    if "ipad" in raw or "ipados" in raw:
+        return "ipados"
+    if "iphone" in raw or "ios" in raw:
+        return "ios"
+    if "apple tv" in raw or "tvos" in raw:
+        return "apple_tv"
+    if "chromecast" in raw:
+        return "chromecast"
+    if "samsung" in raw or "tizen" in raw:
+        return "samsung_tv"
+    if "lg" in raw or "webos" in raw:
+        return "lg_tv"
+    if "xbox" in raw:
+        return "xbox"
+    if "playstation" in raw or "ps5" in raw or "ps4" in raw:
+        return "playstation"
+    if "relay" in raw:
+        return "relay"
+    if "web" in raw or "chrome" in raw or "firefox" in raw or "safari" in raw or "edge" in raw:
+        return "plex_web"
+    if "htpc" in raw or "desktop" in raw:
+        return "desktop"
+    return "unknown"
+
+
+def _empty_telemetry() -> Dict[str, Any]:
+    return {
+        "version": 1,
+        "outcomes": {},
+        "client_families": {},
+        "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0},
+    }
+
+
+def _increment_telemetry_counter(root: Dict[str, Any], section: str, key: str) -> None:
+    safe_key = re.sub(r"[^a-z0-9_.-]+", "_", str(key).lower()).strip("_") or "unknown"
+    bucket = root.setdefault(section, {})
+    row = bucket.setdefault(safe_key, {"count": 0})
+    row["count"] = int(row.get("count", 0)) + 1
+
+
+def record_telemetry(
+    outcome: str,
+    ev: Optional["InputEvent"] = None,
+    ctx: Optional["SessionContext"] = None,
+    *,
+    latency_ms: Optional[float] = None,
+) -> None:
+    if not (TELEMETRY_ENABLED and TELEMETRY_FILE):
+        return
+    try:
+        path = Path(TELEMETRY_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("version") != 1:
+                data = _empty_telemetry()
+        except Exception:
+            data = _empty_telemetry()
+
+        _increment_telemetry_counter(data, "outcomes", outcome)
+        _increment_telemetry_counter(
+            data,
+            "client_families",
+            safe_client_family(
+                getattr(ctx, "player_product", None),
+                getattr(ctx, "player_title", None),
+                getattr(ev, "video_decision", None),
+            ),
+        )
+        if latency_ms is not None:
+            latency = data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0})
+            value = max(0.0, float(latency_ms))
+            latency["count"] = int(latency.get("count", 0)) + 1
+            latency["sum"] = round(float(latency.get("sum", 0.0)) + value, 3)
+            latency["max"] = round(max(float(latency.get("max", 0.0)), value), 3)
+
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        log.debug("Telemetry write failed", exc_info=True)
 
 
 # -------------------------
@@ -911,7 +1012,11 @@ def find_client(plex, ctx: SessionContext, fallback_machine_id: Optional[str]):
         try:
             c = plex.client(ctx.player_title)
             if c:
-                return c, str(getattr(c, "machineIdentifier", "") or ctx.machine_id or "")
+                resolved = str(getattr(c, "machineIdentifier", "") or getattr(c, "clientIdentifier", "") or "")
+                if target_ids and resolved and resolved not in target_ids:
+                    log.warning("Player title lookup returned mismatched client identifier; refusing remote control.")
+                    return None, None
+                return c, resolved or (ctx.machine_id or "")
         except Exception:
             pass
 
@@ -1125,6 +1230,7 @@ def log_event(level_name: str, msg: str, ev: Optional[InputEvent] = None, ctx: O
 
 
 def main(argv: List[str]) -> int:
+    start_ts = time.monotonic()
     ev = parse_args(argv)
 
     log.info(
@@ -1204,6 +1310,21 @@ def main(argv: List[str]) -> int:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
         return 0
 
+    if SHADOW_MODE:
+        record_telemetry("shadow_downshift_candidate", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
+        log_event(
+            "INFO",
+            "%s shadow candidate: mediaIndex=%s offset_ms=%s"
+            % (
+                "Waterfall downshift" if continued_waterfall and not protected_source else "Downshift",
+                target_idx,
+                ctx.view_offset_ms or 0,
+            ),
+            ev=ev,
+            ctx=ctx,
+        )
+        return 0
+
     # Find controllable client
     client, identifier_used = find_client(plex, ctx, ev.machine_id)
     if not client:
@@ -1243,10 +1364,12 @@ def main(argv: List[str]) -> int:
                     log.debug("seekTo attempt %s failed: %s", attempt, e)
                     time.sleep(SEEK_RETRY_DELAY_S)
 
+        record_telemetry("downshift_sent", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
         log_event("INFO", "Downshift command sent successfully.", ev=ev, ctx=ctx)
         return 0
 
     except Exception as e:
+        record_telemetry("downshift_failed", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
         log_event("ERROR", "Downshift failed: %s" % e, ev=ev, ctx=ctx)
         if KILL_ON_SWITCH_FAIL:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_SWITCH_FAIL)

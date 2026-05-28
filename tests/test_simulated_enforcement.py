@@ -354,6 +354,66 @@ def test_session_matching_falls_back_to_rating_key_and_machine_id(monkeypatch):
     assert context.machine_id == profile.machine_identifier
 
 
+def test_telemetry_aggregates_client_family_without_user_identifiers(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / "telemetry" / "downshiftarr.json"
+    monkeypatch.setattr(Downshiftarr, "TELEMETRY_FILE", str(path), raising=False)
+    event = Downshiftarr.InputEvent(
+        username="Alice Example",
+        rating_key="rating-secret",
+        session_id="session-secret",
+        video_decision="transcode",
+    )
+    context = Downshiftarr.SessionContext(
+        session_item=object(),
+        session_key="session-key-secret",
+        session_id="session-secret",
+        username="Alice Example",
+        machine_id="machine-secret",
+        player_title="Alice Living Room Roku",
+        player_product="Plex for Roku",
+        player_address="192.0.2.55",
+        player_port="32400",
+        view_offset_ms=12345,
+    )
+
+    Downshiftarr.record_telemetry("downshift_sent", event, context, latency_ms=42.2)
+
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert data["version"] == 1
+    assert data["outcomes"]["downshift_sent"]["count"] == 1
+    assert data["client_families"]["roku"]["count"] == 1
+    assert data["latency_ms"]["count"] == 1
+    assert "Alice" not in text
+    assert "rating-secret" not in text
+    assert "session-secret" not in text
+    assert "machine-secret" not in text
+    assert "192.0.2.55" not in text
+
+
+def test_shadow_mode_records_candidate_without_remote_control(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / "telemetry" / "downshiftarr.json"
+    session = protected_session(machine_identifier="client-plex-web")
+    client = FakeClient(machine_identifier="client-plex-web")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+
+    monkeypatch.setattr(Downshiftarr, "SHADOW_MODE", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "TELEMETRY_FILE", str(path), raising=False)
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert code == 0
+    assert terminations == []
+    assert client.play_calls == []
+    assert data["outcomes"]["shadow_downshift_candidate"]["count"] == 1
+
+
 def test_client_discovery_uses_player_title_lookup_when_enumeration_misses():
     session = protected_session()
     ctx = attr(
@@ -362,13 +422,30 @@ def test_client_discovery_uses_player_title_lookup_when_enumeration_misses():
         player_address=None,
         player_port=None,
     )
-    named = FakeClient(machine_identifier="named-client")
+    named = FakeClient(machine_identifier="missing-id")
     plex = FakePlexServer(sessions=[session], clients=[], named_clients={"Plex Web Chrome": named})
 
     client, identifier = find_client(plex, ctx, fallback_machine_id="missing-id")
 
     assert client is named
-    assert identifier == "named-client"
+    assert identifier == "missing-id"
+
+
+def test_client_discovery_rejects_player_title_lookup_identifier_mismatch():
+    session = protected_session()
+    ctx = attr(
+        machine_id="expected-client",
+        player_title="Plex Web Chrome",
+        player_address=None,
+        player_port=None,
+    )
+    named = FakeClient(machine_identifier="different-client")
+    plex = FakePlexServer(sessions=[session], clients=[], named_clients={"Plex Web Chrome": named})
+
+    client, identifier = find_client(plex, ctx, fallback_machine_id="expected-client")
+
+    assert client is None
+    assert identifier is None
 
 
 def test_termination_prefers_tautulli_before_plex_fallback(monkeypatch):

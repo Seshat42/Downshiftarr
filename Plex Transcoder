@@ -123,6 +123,11 @@ SECTION_SCAN_MAX_ITEMS: int = 1000
 # search/section scans during the first transcode segment.
 VERSION_INDEX_FILE: str = "/var/lib/downshiftarr/cache/plex-version-index.json"
 
+# Reject stale hot-path indexes when they carry generation metadata. Missing
+# generation metadata remains usable for backward compatibility but is reported.
+VERSION_INDEX_MAX_AGE_S: int = 15 * 60
+VERSION_INDEX_LAST_STATUS: str = "not_checked"
+
 
 # --- 4) Intercept scope (avoid breaking non-streaming transcoder jobs) ----------------
 
@@ -224,6 +229,21 @@ CACHE_FILE: str = "/config/downshiftarr_plex_transcoder_cache.json"
 CACHE_TTL_S: int = 60 * 60  # 1 hour
 
 
+# --- 10) Decision budget and sanitized telemetry --------------------------------------
+
+# Keep the shim from making Plex clients wait. When this budget is exhausted,
+# pass through to the real transcoder rather than performing more Plex lookups.
+DECISION_BUDGET_MS: int = 100
+
+TELEMETRY_ENABLED: bool = True
+TELEMETRY_FILE: str = "/var/lib/downshiftarr/cache/plex-transcoder-telemetry.json"
+
+# Shadow mode records would-be swaps and immediately passes through to Plex.
+SHADOW_MODE: bool = False
+
+_ACTIVE_DECISION_START_MS: Optional[float] = None
+
+
 # --- 10) Misc ------------------------------------------------------------------------
 
 # Video file extensions used to identify the primary "-i <file>" input.
@@ -251,6 +271,7 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "ENABLE_SECTION_SCAN_FALLBACK": bool,
     "SECTION_SCAN_MAX_ITEMS": int,
     "VERSION_INDEX_FILE": str,
+    "VERSION_INDEX_MAX_AGE_S": int,
     "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
     "SKIP_WHEN_VIDEO_CODEC_COPY": bool,
     "MAX_ALLOWED_HEIGHT": int,
@@ -270,6 +291,10 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "ENABLE_CACHE": bool,
     "CACHE_FILE": str,
     "CACHE_TTL_S": int,
+    "DECISION_BUDGET_MS": int,
+    "TELEMETRY_ENABLED": bool,
+    "TELEMETRY_FILE": str,
+    "SHADOW_MODE": bool,
 }
 
 
@@ -433,6 +458,117 @@ def log(level: str, message: str) -> None:
         pass
 
 
+def monotonic_ms() -> float:
+    return time.monotonic() * 1000.0
+
+
+def budget_exhausted(start_ms: float) -> bool:
+    if DECISION_BUDGET_MS <= 0:
+        return True
+    return (monotonic_ms() - start_ms) >= DECISION_BUDGET_MS
+
+
+def remaining_decision_budget_s() -> Optional[float]:
+    if _ACTIVE_DECISION_START_MS is None:
+        return None
+    if DECISION_BUDGET_MS <= 0:
+        return 0.0
+    remaining_ms = DECISION_BUDGET_MS - (monotonic_ms() - _ACTIVE_DECISION_START_MS)
+    return max(0.0, remaining_ms / 1000.0)
+
+
+def safe_client_family(value: object = "") -> str:
+    raw = str(value or "").lower()
+    if "roku" in raw:
+        return "roku"
+    if "fire" in raw:
+        return "fire_tv"
+    if "shield" in raw:
+        return "nvidia_shield"
+    if "android tv" in raw or "google tv" in raw:
+        return "android_tv"
+    if "android" in raw:
+        return "android"
+    if "ipad" in raw or "ipados" in raw:
+        return "ipados"
+    if "iphone" in raw or "ios" in raw:
+        return "ios"
+    if "apple tv" in raw or "tvos" in raw:
+        return "apple_tv"
+    if "chromecast" in raw:
+        return "chromecast"
+    if "samsung" in raw or "tizen" in raw:
+        return "samsung_tv"
+    if "lg" in raw or "webos" in raw:
+        return "lg_tv"
+    if "xbox" in raw:
+        return "xbox"
+    if "playstation" in raw or "ps5" in raw or "ps4" in raw:
+        return "playstation"
+    if "relay" in raw:
+        return "relay"
+    if "web" in raw or "chrome" in raw or "firefox" in raw or "safari" in raw or "edge" in raw:
+        return "plex_web"
+    if "htpc" in raw or "desktop" in raw:
+        return "desktop"
+    return "unknown"
+
+
+def _empty_telemetry() -> dict:
+    return {
+        "version": 1,
+        "outcomes": {},
+        "client_families": {},
+        "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0},
+        "version_index": {},
+    }
+
+
+def _increment_counter(root: dict, section: str, key: str, amount: int = 1) -> None:
+    bucket = root.setdefault(section, {})
+    row = bucket.setdefault(key, {"count": 0})
+    row["count"] = int(row.get("count", 0)) + amount
+
+
+def record_telemetry(
+    outcome: str,
+    *,
+    elapsed_ms: Optional[float] = None,
+    client_family: object = "",
+    index_status: str = "",
+) -> None:
+    if not (TELEMETRY_ENABLED and TELEMETRY_FILE):
+        return
+    try:
+        os.makedirs(os.path.dirname(TELEMETRY_FILE) or ".", exist_ok=True)
+        try:
+            with open(TELEMETRY_FILE, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict) or data.get("version") != 1:
+                data = _empty_telemetry()
+        except Exception:
+            data = _empty_telemetry()
+
+        _increment_counter(data, "outcomes", re.sub(r"[^a-z0-9_.-]+", "_", str(outcome).lower()).strip("_") or "unknown")
+        family = safe_client_family(client_family)
+        _increment_counter(data, "client_families", family)
+        if index_status:
+            _increment_counter(data, "version_index", re.sub(r"[^a-z0-9_.-]+", "_", index_status.lower()).strip("_") or "unknown")
+        if elapsed_ms is not None:
+            latency = data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0})
+            value = max(0.0, float(elapsed_ms))
+            latency["count"] = int(latency.get("count", 0)) + 1
+            latency["sum"] = round(float(latency.get("sum", 0.0)) + value, 3)
+            latency["max"] = round(max(float(latency.get("max", 0.0)), value), 3)
+
+        tmp = TELEMETRY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, sort_keys=True)
+        os.replace(tmp, TELEMETRY_FILE)
+    except Exception:
+        pass
+
+
 # =====================================================================================
 # Helpers: Plex HTTP
 # =====================================================================================
@@ -472,6 +608,13 @@ def plex_get_json(path: str, params: Dict[str, str]) -> Optional[dict]:
     if not token:
         log("ERROR", "PLEX_TOKEN is not configured and no X_PLEX_TOKEN env var was found.")
         return None
+    remaining_budget_s = remaining_decision_budget_s()
+    if remaining_budget_s is not None and remaining_budget_s <= 0:
+        log("DEBUG", f"Decision budget exhausted before Plex API request path={path}")
+        return None
+    timeout_s = PLEX_HTTP_TIMEOUT_S
+    if remaining_budget_s is not None:
+        timeout_s = min(PLEX_HTTP_TIMEOUT_S, max(remaining_budget_s, 0.001))
 
     q = dict(params or {})
     url = _join_url(PLEX_URL, path)
@@ -483,7 +626,7 @@ def plex_get_json(path: str, params: Dict[str, str]) -> Optional[dict]:
         headers={"Accept": "application/json", "X-Plex-Token": token},
     )
     try:
-        with urllib.request.urlopen(req, timeout=PLEX_HTTP_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             raw = resp.read()
         return json.loads(raw.decode("utf-8", errors="replace"))
     except Exception as e:
@@ -949,26 +1092,41 @@ def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, d
 
 
 def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[str, dict]]:
+    global VERSION_INDEX_LAST_STATUS
     index_path = (VERSION_INDEX_FILE or "").strip()
     if not index_path or not os.path.isfile(index_path):
+        VERSION_INDEX_LAST_STATUS = "missing"
         return None
     try:
         with open(index_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except Exception as exc:
+        VERSION_INDEX_LAST_STATUS = "unreadable"
         log("DEBUG", f"Ignoring unreadable version index: {exc}")
         return None
     if not isinstance(data, dict) or data.get("version") != 1:
+        VERSION_INDEX_LAST_STATUS = "invalid"
         return None
     items = data.get("items") or []
     if not isinstance(items, list):
+        VERSION_INDEX_LAST_STATUS = "invalid"
         return None
+    if not items:
+        VERSION_INDEX_LAST_STATUS = "empty"
+        return None
+    generated = safe_int(data.get("generated_at_epoch"))
+    if generated is not None and VERSION_INDEX_MAX_AGE_S > 0:
+        if (time.time() - generated) > VERSION_INDEX_MAX_AGE_S:
+            VERSION_INDEX_LAST_STATUS = "stale"
+            return None
     for item in items:
         if not isinstance(item, dict):
             continue
         rating_key = item.get("ratingKey") or item.get("rating_key")
         if rating_key and _item_has_file(item, file_path):
+            VERSION_INDEX_LAST_STATUS = "hit"
             return str(rating_key), item
+    VERSION_INDEX_LAST_STATUS = "miss"
     return None
 
 
@@ -1343,6 +1501,9 @@ def exec_real_transcoder(real_path: str, args: Sequence[str]) -> None:
 
 
 def main() -> None:
+    global _ACTIVE_DECISION_START_MS
+    decision_start_ms = monotonic_ms()
+    _ACTIVE_DECISION_START_MS = decision_start_ms
     args = sys.argv[1:]
     real = resolve_real_transcoder_path()
 
@@ -1384,6 +1545,7 @@ def main() -> None:
                     args[input_idx] = ce.fallback_file
                     swapped_to_sdr = (classify_dynamic_range(ce.fallback_dr) == "SDR")
                     final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+                    record_telemetry("cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
                     exec_real_transcoder(real, final_args)
                     return
             else:
@@ -1391,13 +1553,21 @@ def main() -> None:
                 args[input_idx] = ce.fallback_file
                 swapped_to_sdr = (classify_dynamic_range(ce.fallback_dr) == "SDR")
                 final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+                record_telemetry("cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
                 exec_real_transcoder(real, final_args)
                 return
+
+    if budget_exhausted(decision_start_ms):
+        log("WARNING", f"Decision budget exhausted before Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
+        record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        exec_real_transcoder(real, args)
+        return
 
     # Lookup item by file path.
     found = plex_find_item_by_file(input_file)
     if not found:
         log("WARNING", f"Plex lookup failed for input file: {input_file}")
+        record_telemetry("lookup_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1405,6 +1575,11 @@ def main() -> None:
         return
 
     rating_key, search_item = found
+    if budget_exhausted(decision_start_ms):
+        log("WARNING", f"Decision budget exhausted after Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
+        record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        exec_real_transcoder(real, args)
+        return
 
     # -----------------------------------------------------------------------------
     # Fast path: if the search response is already enough to tell us this is NOT protected, skip the more expensive full-metadata fetch.
@@ -1417,13 +1592,21 @@ def main() -> None:
                 and (not should_waterfall_continued_transcode(current_quick))
                 and (not args_indicate_hdr_tonemap(args))
             ):
+                record_telemetry("fast_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
                 exec_real_transcoder(real, args)
                 return
+
+    if budget_exhausted(decision_start_ms):
+        log("WARNING", f"Decision budget exhausted before full metadata; passing through budget_ms={DECISION_BUDGET_MS}")
+        record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        exec_real_transcoder(real, args)
+        return
 
     # Fetch full metadata (streams / dynamic range). This is what makes swap decisions accurate.
     full_item = plex_fetch_full_metadata(rating_key)
     if not full_item:
         log("WARNING", f"Could not fetch full metadata for ratingKey={rating_key}")
+        record_telemetry("metadata_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1433,6 +1616,7 @@ def main() -> None:
     current = find_current_media(full_item, input_file)
     if not current:
         log("WARNING", "Could not match current media in full metadata")
+        record_telemetry("current_media_miss", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1446,6 +1630,13 @@ def main() -> None:
     continued_waterfall = (not protected) and should_waterfall_continued_transcode(current)
 
     if not protected and not continued_waterfall:
+        record_telemetry("policy_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        exec_real_transcoder(real, args)
+        return
+
+    if budget_exhausted(decision_start_ms):
+        log("WARNING", f"Decision budget exhausted before fallback selection; passing through budget_ms={DECISION_BUDGET_MS}")
+        record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         exec_real_transcoder(real, args)
         return
 
@@ -1465,9 +1656,20 @@ def main() -> None:
     fallback = pick_best_fallback(full_item, current, req_stream_max)
     if not fallback:
         log("WARNING", "No compliant fallback version found (or none passed stream safety checks)")
+        record_telemetry("no_fallback", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if protected and KILL_TRANSCODE_IF_NO_FALLBACK:
             log("ERROR", "Policy: killing protected transcode (KILL_TRANSCODE_IF_NO_FALLBACK=1)")
             sys.exit(1)
+        exec_real_transcoder(real, args)
+        return
+
+    if SHADOW_MODE:
+        log(
+            "INFO",
+            f"Shadow mode: would waterfall swap {current.height}p/{current.dyn_range_class} -> "
+            f"{fallback.height}p/{fallback.dyn_range_class} ({os.path.basename(fallback.file_path)})",
+        )
+        record_telemetry("shadow_swap_candidate", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         exec_real_transcoder(real, args)
         return
 
@@ -1496,6 +1698,7 @@ def main() -> None:
 
     # Rewrite args for performance and exec.
     final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+    record_telemetry("waterfall_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
     exec_real_transcoder(real, final_args)
 
 

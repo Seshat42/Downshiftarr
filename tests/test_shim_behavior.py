@@ -279,6 +279,32 @@ def test_shim_passes_through_when_continued_waterfall_has_no_lower_version(monke
     assert captured["args"][1] == input_file
 
 
+def test_shim_budget_exhaustion_passes_through_without_plex_lookup(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    captured = {}
+
+    input_file = "/media/movie-2160-hdr.mkv"
+    monkeypatch.setattr(shim, "DECISION_BUDGET_MS", 0, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", True)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+    monkeypatch.setattr(
+        shim,
+        "plex_get_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("budget-exhausted shim must not call Plex API")),
+    )
+
+    shim.main()
+
+    assert captured["real"] == str(real)
+    assert captured["args"] == ["-i", input_file, "-f", "dash", "chunk"]
+
+
 def test_shim_rewrites_tonemap_filters_when_swapping_to_sdr(monkeypatch):
     shim = load_shim()
     monkeypatch.setattr(shim, "REMOVE_BITRATE_LIMITS", True)
@@ -531,6 +557,132 @@ def test_shim_uses_precomputed_version_index_before_plex_search(monkeypatch, tmp
 
     assert found is not None
     assert found[0] == "9001"
+
+
+def test_shim_version_index_reports_empty_and_stale(monkeypatch, tmp_path):
+    shim = load_shim()
+    target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
+    index_path = tmp_path / "plex-version-index.json"
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path))
+
+    index_path.write_text(json.dumps({"version": 1, "items": []}), encoding="utf-8")
+    assert shim.plex_find_item_by_file_via_version_index(target) is None
+    assert shim.VERSION_INDEX_LAST_STATUS == "empty"
+
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "generated_at_epoch": 1000,
+                "items": [
+                    {
+                        "ratingKey": "9001",
+                        "Media": [{"height": 2160, "Part": [{"file": target}]}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shim, "VERSION_INDEX_MAX_AGE_S", 60, raising=False)
+    monkeypatch.setattr(shim.time, "time", lambda: 2000)
+
+    assert shim.plex_find_item_by_file_via_version_index(target) is None
+    assert shim.VERSION_INDEX_LAST_STATUS == "stale"
+
+
+def test_shim_records_sanitized_aggregate_telemetry(monkeypatch, tmp_path):
+    shim = load_shim()
+    telemetry_path = tmp_path / "telemetry" / "shim.json"
+    monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
+
+    shim.record_telemetry("waterfall_swap", elapsed_ms=12.4, client_family="Plex for Roku / Alice")
+
+    text = telemetry_path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert data["version"] == 1
+    assert data["outcomes"]["waterfall_swap"]["count"] == 1
+    assert data["latency_ms"]["count"] == 1
+    assert data["client_families"]["roku"]["count"] == 1
+    assert "Alice" not in text
+    assert "Plex for Roku" not in text
+
+
+def test_shim_caps_plex_http_timeout_to_remaining_decision_budget(monkeypatch):
+    shim = load_shim()
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"MediaContainer": {}}'
+
+    monkeypatch.setattr(shim, "PLEX_TOKEN", "token", raising=False)
+    monkeypatch.setattr(shim, "PLEX_TOKEN_FILE", "", raising=False)
+    monkeypatch.setattr(shim, "PLEX_HTTP_TIMEOUT_S", 10.0, raising=False)
+    monkeypatch.setattr(shim, "DECISION_BUDGET_MS", 100, raising=False)
+    monkeypatch.setattr(shim, "_ACTIVE_DECISION_START_MS", 1000.0, raising=False)
+    monkeypatch.setattr(shim, "monotonic_ms", lambda: 1075.0)
+
+    def fake_urlopen(req, timeout):
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(shim.urllib.request, "urlopen", fake_urlopen)
+
+    assert shim.plex_get_json("/status", {}) == {"MediaContainer": {}}
+    assert 0 < captured["timeout"] <= 0.025
+
+
+def test_shim_passes_through_when_budget_exhausted_before_http(monkeypatch):
+    shim = load_shim()
+
+    monkeypatch.setattr(shim, "PLEX_TOKEN", "token", raising=False)
+    monkeypatch.setattr(shim, "PLEX_TOKEN_FILE", "", raising=False)
+    monkeypatch.setattr(shim, "DECISION_BUDGET_MS", 100, raising=False)
+    monkeypatch.setattr(shim, "_ACTIVE_DECISION_START_MS", 1000.0, raising=False)
+    monkeypatch.setattr(shim, "monotonic_ms", lambda: 1101.0)
+    monkeypatch.setattr(
+        shim.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("budget-exhausted request should not be opened")),
+    )
+
+    assert shim.plex_get_json("/status", {}) is None
+
+
+def test_shim_shadow_mode_records_candidate_without_swapping(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    telemetry_path = tmp_path / "telemetry" / "shim.json"
+    captured = {}
+
+    input_file = "/media/movie-2160-hdr.mkv"
+    fallback_file = "/media/movie-1080-sdr.mkv"
+    full_item = {"Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")]}
+
+    monkeypatch.setattr(shim, "SHADOW_MODE", True, raising=False)
+    monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+    monkeypatch.setattr(shim, "plex_find_item_by_file", lambda path: ("rk-1", full_item))
+    monkeypatch.setattr(shim, "plex_fetch_full_metadata", lambda rating_key: full_item)
+
+    shim.main()
+
+    assert captured["args"] == ["-i", input_file, "-f", "dash", "chunk"]
+    data = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert data["outcomes"]["shadow_swap_candidate"]["count"] == 1
 
 
 def test_shim_never_resolves_to_undiverted_transcoder(monkeypatch, tmp_path):

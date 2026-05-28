@@ -135,3 +135,11 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Added optional shim support for `/var/lib/downshiftarr/cache/plex-version-index.json`. The shim checks that precomputed index before live Plex search/section scans so Bragi can keep first-segment decisions fast while still falling back to bounded Plex lookups when the index is absent or stale.
 - Added regression coverage for edition mismatch refusal, same-edition fallback, and version-index lookup before Plex API search.
 - The shim now supports `PLEX_TOKEN_FILE` in external JSON config. It reads one root-owned, regular, non-symlink token file at runtime, rejects group/other writable or other-readable files, keeps token values out of argv/process environment, and falls back to no lookup when the file is unsafe.
+
+## 2026-05-28 Speed-First Shadow And Telemetry Follow-Up
+
+- Q: Should the next Downshiftarr pass prioritize absolute enforcement or Plex client speed? A: Speed and UX first. Broad evaluation should run in shadow mode, and active downshift should stay targeted to proven risky protected Plex Versions.
+- Added a 100 ms default decision budget to the Plex Transcoder shim. The shim now caps Plex API request timeouts to the remaining decision budget and passes through when the budget is exhausted, rather than making Plex clients wait.
+- Added sanitized aggregate telemetry to both the shim and `Downshiftarr.py`: outcome counters, client-family buckets, version-index statuses, and latency summaries only. Raw usernames, tokens, IPs, rating keys, session ids, machine identifiers, and watch timelines remain out of telemetry.
+- Added shadow-mode paths for both controller layers. Shadow mode records would-be downshift candidates and immediately passes through without Plex remote-control changes or input-file swaps.
+- Added regression coverage for budget exhaustion before lookup, budget-capped Plex HTTP timeouts, stale/empty version-index diagnostics, sanitized telemetry, shadow-mode pass-through, and mismatched `plex.client(player_title)` identifier refusal.

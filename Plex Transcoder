@@ -1179,6 +1179,16 @@ def rewrite_args_for_performance(
     while i < len(args):
         a = args[i]
 
+        # Plex places source decoder hints before -i. After replacing the input
+        # file those hints can force the wrong decoder (for example truehd_eae
+        # against an AAC fallback), so remove only pre-input decoder/EAE hints.
+        if swapped_to_sdr and input_value_index >= 0 and i < input_value_index:
+            if a == "-codec" or a.startswith("-codec:") or a.startswith("-eae_prefix:"):
+                if i + 1 < len(args):
+                    log("DEBUG", f"Optimization: removed stale input hint {a} {args[i+1]}")
+                    i += 2
+                    continue
+
         # Bitrate limit stripping: only after the input, so we don't touch decoder hints.
         if REMOVE_BITRATE_LIMITS and input_value_index >= 0 and i > input_value_index:
             if (

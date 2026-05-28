@@ -167,6 +167,10 @@ def test_shim_intercepts_plex_hls_ssegment_output(monkeypatch, tmp_path):
             "Plex Transcoder",
             "-codec:0",
             "h264",
+            "-codec:1",
+            "truehd_eae",
+            "-eae_prefix:1",
+            "bragi-downshiftarr-test_",
             "-i",
             input_file,
             "-filter_complex",
@@ -201,6 +205,9 @@ def test_shim_intercepts_plex_hls_ssegment_output(monkeypatch, tmp_path):
 
     assert captured["real"] == str(real)
     assert captured["args"][captured["args"].index("-i") + 1] == fallback_file
+    assert "truehd_eae" not in captured["args"]
+    assert "-eae_prefix:1" not in captured["args"]
+    assert "libx264" in captured["args"]
 
 
 def test_shim_passes_through_when_continued_waterfall_has_no_lower_version(monkeypatch, tmp_path):

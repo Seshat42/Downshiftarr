@@ -1,3 +1,5 @@
+NOTE: This software was originally written by hand via a human, it is now developed with AI assistance.
+
 # Downshiftarr
 
 Downshiftarr is a **Plex 4K/HDR/DV transcode guard** designed to be run from a **Tautulli “Script” notification**.

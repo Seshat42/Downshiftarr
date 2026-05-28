@@ -548,6 +548,23 @@ def classify_dynamic_range(dr: str) -> str:
     return "HDR"
 
 
+def dynamic_range_from_file_name(file_path: str) -> str:
+    """Infer common HDR/SDR tags from version filenames when Plex metadata is thin."""
+    base = os.path.basename(str(file_path or ""))
+    normalized = re.sub(r"[^A-Z0-9]+", " ", base.upper()).strip()
+    if not normalized:
+        return "UNKNOWN"
+
+    tokens = set(normalized.split())
+    if "DOLBY VISION" in normalized or {"DOLBY", "VISION"}.issubset(tokens) or "DOVI" in tokens or "DV" in tokens:
+        return "DOLBY VISION"
+    if any(t in tokens for t in ("HDR", "HDR10", "HDR10PLUS", "HLG")):
+        return "HDR"
+    if "SDR" in tokens:
+        return "SDR"
+    return "UNKNOWN"
+
+
 def media_dynamic_range(media: dict) -> str:
     """Best-effort dynamic range detection.
 
@@ -980,6 +997,11 @@ def build_media_info(media: dict) -> Optional[MediaInfo]:
     h = media_height(media)
     dr = media_dynamic_range(media)
     drc = classify_dynamic_range(dr)
+    if drc == "UNKNOWN":
+        inferred = dynamic_range_from_file_name(str(fp))
+        if inferred != "UNKNOWN":
+            dr = inferred
+            drc = classify_dynamic_range(dr)
     msi = part_max_stream_index(media)
     return MediaInfo(media=media, file_path=str(fp), height=h, dyn_range=dr, dyn_range_class=drc, max_stream_index=msi)
 

@@ -63,6 +63,36 @@ def test_shim_fallback_selection_prefers_sdr_1080(monkeypatch):
     assert fallback.dyn_range_class == "SDR"
 
 
+def test_shim_fallback_selection_infers_sdr_from_filename_when_plex_metadata_is_thin(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(shim, "MAX_FALLBACK_HEIGHT", 1080)
+    monkeypatch.setattr(shim, "FALLBACK_SDR_ONLY", True)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+
+    current = shim.build_media_info(shim_media("/media/movie-2160-hdr.mkv", 2160, "UNKNOWN"))
+    item = {
+        "Media": [
+            current.media,
+            shim_media("/media/movie-1080-sdr.mkv", 1080, "UNKNOWN"),
+            shim_media("/media/movie-720-hdr.mkv", 720, "UNKNOWN"),
+        ]
+    }
+
+    fallback = shim.pick_best_fallback(item, current, required_max_stream=None)
+
+    assert fallback.file_path == "/media/movie-1080-sdr.mkv"
+    assert fallback.dyn_range_class == "SDR"
+
+
+def test_shim_media_info_infers_hdr_from_filename_when_plex_metadata_is_thin():
+    shim = load_shim()
+
+    info = shim.build_media_info(shim_media("/media/movie-1080-hdr10.mkv", 1080, "UNKNOWN"))
+
+    assert info.dyn_range_class == "HDR"
+
+
 def test_shim_fallback_selection_includes_360p_waterfall(monkeypatch):
     shim = load_shim()
     monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)

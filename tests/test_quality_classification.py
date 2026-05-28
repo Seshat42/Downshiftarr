@@ -1,5 +1,6 @@
-import Downshiftarr
 import pytest
+
+import Downshiftarr
 from Downshiftarr import classify_dynamic_range, is_high_quality
 
 

@@ -1,9 +1,40 @@
-from Downshiftarr import parse_resolution_hint, safe_int
+from Downshiftarr import env_bool, parse_resolution_hint, safe_int
 
 
 class Unstringable:
     def __str__(self):
         raise RuntimeError("cannot convert to string")
+
+
+def test_env_bool_missing_uses_default(monkeypatch):
+    monkeypatch.delenv("MISSING_VAR", raising=False)
+
+    assert not env_bool("MISSING_VAR")
+    assert env_bool("MISSING_VAR", default=True)
+    assert not env_bool("MISSING_VAR", default=False)
+
+
+def test_env_bool_empty_or_whitespace_uses_default(monkeypatch):
+    monkeypatch.setenv("TEST_VAR", "")
+    assert not env_bool("TEST_VAR")
+    assert env_bool("TEST_VAR", default=True)
+
+    monkeypatch.setenv("TEST_VAR", "   ")
+    assert not env_bool("TEST_VAR")
+    assert env_bool("TEST_VAR", default=True)
+
+
+def test_env_bool_truthy_values(monkeypatch):
+    for value in ("1", "true", "yes", "y", "on", "  True  ", "YES\n", "1 "):
+        monkeypatch.setenv("TEST_VAR", value)
+        assert env_bool("TEST_VAR")
+
+
+def test_env_bool_falsy_values(monkeypatch):
+    for value in ("0", "false", "no", "n", "off", "  False  ", "random", "2"):
+        monkeypatch.setenv("TEST_VAR", value)
+        assert not env_bool("TEST_VAR")
+        assert not env_bool("TEST_VAR", default=True)
 
 
 def test_safe_int_none():

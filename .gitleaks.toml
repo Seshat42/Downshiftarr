@@ -5,6 +5,7 @@ description = "Allow documented placeholder credentials."
 regexes = [
     '''PUT_YOUR_[A-Z_]+_HERE''',
     '''YOUR_[A-Z_]+(_HERE)?''',
+    '''replace-with-[a-z0-9-]+''',
 ]
 
 [[rules]]

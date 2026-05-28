@@ -2,7 +2,7 @@
 
 Last reviewed: 2026-05-28
 
-Loki is the local Windows Plex server used for opt-in real integration tests. This lane is intentionally separate from CI and from WSL-only development because WSL currently cannot reach Windows Plex at `127.0.0.1:32400`.
+Loki is the local Windows Plex server used for opt-in real integration tests. This lane is intentionally separate from deterministic WSL verification because WSL currently cannot reach Windows Plex at `127.0.0.1:32400`.
 
 ## Guardrails
 
@@ -33,7 +33,7 @@ DOWNSHIFTARR_LOKI_PLEX_TOKEN=YOUR_PLEX_TOKEN_HERE
 DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=0
 ```
 
-`Downshiftarr.test.env` is ignored by Git. Do not paste real tokens into docs, screenshots, shell history examples, issue bodies, or scan artifacts.
+`Downshiftarr.test.env` is ignored by Git. Do not paste real tokens into docs, screenshots, shell history examples, local support notes, or scan artifacts.
 
 ## Non-Destructive Proof
 

@@ -171,17 +171,10 @@ python3 -m pip install --upgrade plexapi requests python-dotenv
 The repository is maintained WSL-first. From the project root:
 
 ```bash
-uv sync --all-groups
-uv run pytest -m "not loki and not browser and not destructive"
-uv run pytest -m simulated
-uv run pytest -m media
-uv run ruff check .
-uv run ruff format --check .
-uv run pip-audit
-uv run bandit -c pyproject.toml -r Downshiftarr.py "Plex Transcoder" --baseline docs/security/bandit-baseline.json
+python scripts/testing/verify_local.py
 ```
 
-Use Windows `gh` for authenticated GitHub metadata until WSL `gh auth login` is configured.
+GitHub is used only as the `origin` remote for repository storage. Verification is local and WSL-first.
 
 Testing docs:
 
@@ -426,4 +419,4 @@ Set:
 VERBOSE=1
 ```
 - Then reproduce the issue and inspect the log file.
-- Submit an issue here on GitHub with your logs and description.
+- Record the reproduction details, sanitized logs, and local verification output for the maintainer/operator.

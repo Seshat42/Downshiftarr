@@ -8,12 +8,12 @@ Downshiftarr uses a layered test rig so most behavior is proven deterministicall
 
 1. Unit tests
    - Fast tests for helpers, parsing, classification, media-height handling, token transport, and argument normalization.
-   - Run in WSL and CI.
+   - Run in WSL through local verification.
 
 2. Simulated integration tests
    - Fake Plex sessions, fake Tautulli-shaped events, fake client controls, and representative client profiles.
    - Covers session matching, client discovery, fallback selection, remote-control failure, seek failure, termination fallback, and shim behavior.
-   - Run in WSL and CI.
+   - Run in WSL through local verification.
 
 3. Generated-media tests
    - `scripts/testing/generate_media.py` creates synthetic fixtures with FFmpeg under `artifacts/plex-test-media/` by default.
@@ -39,10 +39,10 @@ Downshiftarr uses a layered test rig so most behavior is proven deterministicall
 - `destructive`: opt-in tests allowed to mutate the local Loki Plex test library or terminate test sessions.
 - `slow`: intentionally slower tests excluded from tight loops unless selected.
 
-CI runs:
+The official local verification runner is:
 
 ```bash
-uv run pytest -m "not loki and not browser and not destructive"
+python scripts/testing/verify_local.py
 ```
 
 Local WSL lanes:

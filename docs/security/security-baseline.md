@@ -15,7 +15,7 @@ This baseline is concise by design. It defines the minimum accepted security pos
 ## Token Transport
 
 - Preferred Plex API transport: send `X-Plex-Token` in the HTTP header.
-- Consolidation status: PR #10 / `fix-plex-token-exposure-14819038041623419576` is incorporated. `Downshiftarr.py` and the optional `Plex Transcoder` shim send Plex tokens through `X-Plex-Token` request headers instead of URL query parameters.
+- Current status: `Downshiftarr.py` and the optional `Plex Transcoder` shim send Plex tokens through `X-Plex-Token` request headers instead of URL query parameters.
 - Tautulli `api/v2` uses `apikey` as documented by upstream. Keep Tautulli private, avoid proxy logging of query strings, and redact API keys from all artifacts.
 
 ## Plex Transcoder Shim
@@ -49,14 +49,15 @@ Any deployment that disables a `KILL_ON_*` toggle must document the reason, expe
 - Production default should be `LOG_LEVEL=INFO`; use `DEBUG` only during short investigations.
 - Logs may include usernames, session identifiers, rating keys, machine ids, player details, and media metadata. Treat them as sensitive operational data.
 - Logs must not include `PLEX_TOKEN`, `PLEX_USER_TOKEN`, `TAUTULLI_APIKEY`, or token-looking values.
-- Redaction must cover local rotating logs, stderr captured by Tautulli, optional Tautulli notification entries, exception strings, and CI artifacts.
+- Redaction must cover local rotating logs, stderr captured by Tautulli, optional Tautulli notification entries, exception strings, and local proof artifacts.
 - Keep bounded retention through `LOG_MAX_BYTES` and `LOG_BACKUP_COUNT`.
 
-## CI Gates
+## Local Verification Gates
 
 Required gates for security-sensitive changes:
 
-- Unit tests: `python -m pytest` when pytest is available; otherwise `python -m unittest discover`.
+- Official all-up runner: `python scripts/testing/verify_local.py`.
+- Unit and simulated tests through pytest.
 - Ruff lint and format checks through the repo `pyproject.toml`.
 - Dependency audit through `pip-audit`.
 - Bandit over `Downshiftarr.py` and `Plex Transcoder` with `docs/security/bandit-baseline.json` as the committed
@@ -108,12 +109,12 @@ Artifact rules:
 - Plex token-in-header behavior remains present in `Downshiftarr.py` and `Plex Transcoder`.
 - All `KILL_ON_*` defaults remain fail-closed unless a documented exception exists.
 - Logs have redaction coverage and bounded retention.
-- CI gates pass and artifacts follow the layout above.
+- Local verification gates pass and artifacts follow the layout above.
 - Optional `Plex Transcoder` shim deployment is separately approved and rollback-tested.
 
 ## Next Priorities
 
 1. Centralize log redaction and test it with sentinel secrets.
-2. Add CI secret scanning and token-transport checks.
+2. Expand local secret scanning and token-transport checks.
 3. Harden or retire the optional transcoder shim.
 4. Add production runbook entries for token rotation, failed termination alerts, and secure artifact handling.

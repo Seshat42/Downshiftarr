@@ -16,24 +16,18 @@ Work from the existing checkout unless the lane explicitly says otherwise. This
 workspace is shared, so inspect status before editing and never revert unrelated
 changes.
 
-## GitHub CLI Auth
+## Remote Storage
 
-Windows `gh` and WSL `gh` can have different authentication state. Verify both
-before assuming GitHub operations will work:
+GitHub is used only as the `origin` remote for repository storage. Do not rely on any remote platform
+feature beyond plain Git fetch and push.
 
-```powershell
-# Windows PowerShell
-gh auth status --active --hostname github.com
-```
+Use plain Git remote-storage checks when needed:
 
 ```bash
-# WSL
-gh auth status --active --hostname github.com
+git remote -v
+git ls-remote origin HEAD
+git fetch --prune origin
 ```
-
-If WSL is not authenticated but Windows is, do not treat that as a repository
-failure. Record the state, then authenticate WSL with `gh auth login` only when
-the lane requires GitHub API operations from WSL.
 
 ## uv Setup
 
@@ -43,7 +37,7 @@ locked project environment:
 ```bash
 cd /mnt/c/Users/D3/Documents/Downshiftarr
 uv sync --all-groups
-uv run pytest
+uv run pytest -m "not loki and not browser and not destructive"
 ```
 
 ## Verification Commands
@@ -51,11 +45,7 @@ uv run pytest
 Run the focused proof first, then broaden before closeout:
 
 ```bash
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run pip-audit
-uv run bandit -c pyproject.toml -r Downshiftarr.py "Plex Transcoder" --baseline docs/security/bandit-baseline.json
+python scripts/testing/verify_local.py
 ```
 
 For docs-only lanes, at minimum verify repository state and the intended file

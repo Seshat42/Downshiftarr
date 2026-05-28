@@ -21,6 +21,8 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - Before editing, inspect current file state and `git status` so ownership is clear.
 - Do not merge, delete, or rewrite branches unless the user explicitly authorizes the phase. The 2026-05-28 single-main consolidation was explicitly authorized; keep future branch work deliberate and recorded.
 - Keep branch-collision risks visible in `POSTERITY.md`, including active branches, uncommitted files, and any discovered conflicts.
+- GitHub is remote repository storage only. Do not add or rely on any remote platform feature beyond plain Git fetch and push.
+- Local verification is authoritative. Use `scripts/testing/verify_local.py` and the documented WSL gates before pushing to `origin`.
 
 ## Implementation Standards
 
@@ -42,6 +44,7 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 
 - Record verification commands and results in the final response for each task.
 - If verification cannot be run, state why and record the remaining risk.
+- The official all-up gate is `python scripts/testing/verify_local.py` from the repository root.
 - For docs-only lanes, verify at minimum that only intended documentation files changed, plus any relevant repository state checks.
 
 ## Test Rig Rules

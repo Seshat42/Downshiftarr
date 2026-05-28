@@ -18,7 +18,7 @@ Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security bound
 - `Downshiftarr.env`, deployment environment variables, and Tautulli-injected script environment.
 - The optional `Plex Transcoder` shim, which can run in the Plex transcoder execution path.
 - Logs written to `LOG_FILE`, stderr captured by Tautulli, and optional Tautulli notification history.
-- CI/test/scan artifacts used to prove policy and secret-handling behavior.
+- Local test and scan artifacts used to prove policy and secret-handling behavior.
 
 ## Assets
 
@@ -45,7 +45,7 @@ Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security bound
 
 Plex and Tautulli tokens grant operational authority over the media server and monitoring plane. They must not be committed, printed, copied into screenshots, or stored in world-readable files.
 
-Consolidation status: PR #10 / branch `fix-plex-token-exposure-14819038041623419576` was incorporated into the single-main merge. Direct Plex termination and the optional shim now send Plex tokens through `X-Plex-Token` headers instead of URL query parameters.
+Current status: direct Plex termination and the optional shim send Plex tokens through `X-Plex-Token` headers instead of URL query parameters.
 
 Tautulli API calls still use Tautulli's documented `apikey` query parameter. Treat that as an upstream API constraint and compensate with local/private network exposure, TLS when crossing hosts, strict log redaction, and key rotation after suspected exposure.
 
@@ -102,7 +102,7 @@ Controls:
 - A malicious local user modifies `Plex Transcoder` and gains execution in the Plex playback path.
 - A noisy debug run leaks session identifiers or media paths to shared logs.
 - A permissive `KILL_ON_*` configuration silently turns protected-transcode enforcement into observe-only behavior.
-- A CI workflow uploads raw scan artifacts containing env files or logs with secrets.
+- A local proof artifact accidentally captures env files or logs with secrets.
 - A developer accidentally points destructive tests at a production or external Plex server. The Loki guard rejects non-loopback URLs and unexpected machine identifiers to fail closed before library refresh or session enforcement.
 
 ## Next Security Priorities
@@ -110,6 +110,6 @@ Controls:
 1. Add a central redaction helper and route every log/notification message through it.
 2. Add tests with sentinel secrets proving no token reaches logs, stderr, Tautulli notification payloads, or exception output.
 3. Document and test secure file permissions for `Downshiftarr.env`, log files, and the optional shim.
-4. Add CI secret scanning and artifact hygiene checks.
+4. Expand local secret scanning and artifact hygiene checks.
 5. Add operational alerts for repeated fail-closed termination failures.
 6. Decide whether the `Plex Transcoder` shim remains supported; if yes, give it a separate hardening guide and rollback checklist.

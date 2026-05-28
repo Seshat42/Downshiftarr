@@ -30,6 +30,12 @@ Downshiftarr uses a layered test rig so most behavior is proven deterministicall
    - `scripts/testing/loki_browser_smoke.py` verifies the local Plex identity from a browser context when Playwright is installed and explicitly enabled.
    - It is disabled by default and should not save authenticated screenshots, traces, or logs without review.
 
+6. Manual hardening setup
+   - `scripts/testing/verify_hardening_setup.py` validates hardening markers, manual runner wiring, Atheris availability through WSL Python 3.11, mutmut importability, and ignored output paths.
+   - `scripts/testing/list_hardening_runs.py` prints the durable manual checklist.
+   - Campaign runners default to list or dry-run behavior and require `DOWNSHIFTARR_HARDENING_MANUAL=1` plus `--run` before execution.
+   - See `docs/testing/hardening-test-environment.md` and `docs/testing/hardening-initial-runs.md`.
+
 ## Pytest Markers
 
 - `unit`: fast pure unit tests with no external services.
@@ -39,6 +45,13 @@ Downshiftarr uses a layered test rig so most behavior is proven deterministicall
 - `browser`: opt-in browser smoke tests against local Plex Web.
 - `destructive`: opt-in tests allowed to mutate the local Loki Plex test library or terminate test sessions.
 - `slow`: intentionally slower tests excluded from tight loops unless selected.
+- `boundary`: manual boundary value analysis tests.
+- `property`: manual property-based hardening tests.
+- `fuzz`: manual Python-level fuzz/generative hardening tests.
+- `native_fuzz`: manual Atheris/libFuzzer targets using the Python 3.11 WSL lane.
+- `monkey`: manual seeded random-event hardening tests against fakes.
+- `chaos`: manual deterministic fault-injection hardening tests against fakes.
+- `mutation`: manual mutation-testing setup and configuration checks.
 
 The official local verification runner is:
 
@@ -50,9 +63,16 @@ Local WSL lanes:
 
 ```bash
 uv sync --all-groups --python 3.12
-uv run pytest -m "not loki and not browser and not destructive"
+uv run pytest -m "not loki and not browser and not destructive and not property and not fuzz and not native_fuzz and not monkey and not chaos and not mutation and not boundary"
 uv run pytest -m simulated
 uv run pytest -m media
+```
+
+Hardening setup lane:
+
+```bash
+python scripts/testing/verify_hardening_setup.py
+python scripts/testing/list_hardening_runs.py --check
 ```
 
 ## Local Files

@@ -17,6 +17,18 @@ TOKEN_QUERY_PATTERNS = (
     re.compile(r"[?&](?:X-Plex-Token|PLEX_TOKEN|token)="),
     re.compile(r"X-Plex-Token\s*="),
 )
+DEFAULT_EXCLUDED_MARKERS = (
+    "loki",
+    "browser",
+    "destructive",
+    "property",
+    "fuzz",
+    "native_fuzz",
+    "monkey",
+    "chaos",
+    "mutation",
+    "boundary",
+)
 
 
 @dataclass(frozen=True)
@@ -38,12 +50,21 @@ def missing_required_tools(gitleaks_bin: str | None = None) -> list[str]:
     return missing
 
 
-def build_gates(python_version: str = "3.12", gitleaks_bin: str | None = None, ci: bool = False) -> list[Gate]:
+def non_destructive_marker_expression() -> str:
+    return " and ".join(f"not {marker}" for marker in DEFAULT_EXCLUDED_MARKERS)
+
+
+def build_gates(
+    python_version: str = "3.12",
+    gitleaks_bin: str | None = None,
+    ci: bool = False,
+    hardening_setup: bool = False,
+) -> list[Gate]:
     gitleaks = gitleaks_bin or resolve_gitleaks_bin()
     gates = [
         Gate("status", ["git", "status", "--short", "--branch", "--untracked-files=all"]),
         Gate("sync", ["uv", "sync", "--all-groups", "--python", python_version, "--locked"]),
-        Gate("tests-non-destructive", ["uv", "run", "--locked", "pytest", "-m", "not loki and not browser and not destructive"]),
+        Gate("tests-non-destructive", ["uv", "run", "--locked", "pytest", "-m", non_destructive_marker_expression()]),
         Gate("tests-simulated", ["uv", "run", "--locked", "pytest", "-m", "simulated"]),
         Gate("tests-media", ["uv", "run", "--locked", "pytest", "-m", "media"]),
         Gate("ruff-check", ["uv", "run", "--locked", "ruff", "check", "."]),
@@ -70,6 +91,9 @@ def build_gates(python_version: str = "3.12", gitleaks_bin: str | None = None, c
     ]
     if ci:
         gates.append(Gate("secret-hygiene", [sys.executable, "scripts/testing/verify_secret_hygiene.py"]))
+    if hardening_setup:
+        gates.append(Gate("hardening-setup", [sys.executable, "scripts/testing/verify_hardening_setup.py"]))
+    gates.append(Gate("github-storage-only", [sys.executable, str(Path(__file__).relative_to(REPO_ROOT)), "--storage-only-check-only"]))
     gates.append(Gate("diff-check", ["git", "diff", "--check"]))
     return gates
 
@@ -97,6 +121,79 @@ def run_static_token_check() -> int:
     return 0
 
 
+def remote_branch_names() -> list[str]:
+    completed = subprocess.run(
+        ["git", "branch", "-r", "--format=%(refname:short)"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "git branch -r failed")
+    return sorted(
+        line.strip()
+        for line in completed.stdout.splitlines()
+        if line.strip() and line.strip() != "origin" and not line.strip().endswith("/HEAD")
+    )
+
+
+def tracked_github_paths() -> list[str]:
+    completed = subprocess.run(
+        ["git", "ls-files", "--", ".github"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "git ls-files .github failed")
+    return sorted(line.strip() for line in completed.stdout.splitlines() if line.strip())
+
+
+def run_storage_only_check() -> int:
+    findings: list[str] = []
+    github_dir = REPO_ROOT / ".github"
+    if github_dir.exists():
+        findings.append(".github directory must be absent; GitHub is storage only")
+
+    tracked_github = tracked_github_paths()
+    if tracked_github:
+        findings.append("tracked .github paths remain: " + ", ".join(tracked_github))
+
+    non_main_remotes = [branch for branch in remote_branch_names() if branch != "origin/main"]
+    if non_main_remotes:
+        findings.append("non-main remote branches present: " + ", ".join(non_main_remotes))
+
+    docs_paths = [
+        REPO_ROOT / "AGENTS.md",
+        REPO_ROOT / "POSTERITY.md",
+        REPO_ROOT / "README.md",
+    ]
+    if (REPO_ROOT / "docs").exists():
+        docs_paths.extend(sorted((REPO_ROOT / "docs").rglob("*.md")))
+
+    docs_with_github_ci_authority: list[str] = []
+    for path in docs_paths:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"(?i)(github\s+(?:actions|ci|security ci|code scanning|daily release|release publication)|\bCI mirror\b)", text):
+            docs_with_github_ci_authority.append(str(path.relative_to(REPO_ROOT)))
+    if docs_with_github_ci_authority:
+        findings.append("GitHub CI/release authority wording remains: " + ", ".join(docs_with_github_ci_authority))
+
+    if findings:
+        print("GitHub storage-only policy failed:", file=sys.stderr)
+        print("\n".join(findings), file=sys.stderr)
+        return 1
+
+    print("GitHub storage-only policy passed: no .github directory and origin/main is the only remote branch.")
+    return 0
+
+
 def run_gate(gate: Gate) -> int:
     print(f"\n==> {gate.name}: {' '.join(gate.command)}", flush=True)
     completed = subprocess.run(gate.command, cwd=REPO_ROOT)
@@ -106,12 +203,16 @@ def run_gate(gate: Gate) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", default="3.12", help="Python version passed to uv sync.")
-    parser.add_argument("--ci", action="store_true", help="Run CI-only repository hygiene checks in addition to local gates.")
+    parser.add_argument("--ci", action="store_true", help="Legacy alias for local extra hygiene; does not imply GitHub CI authority.")
+    parser.add_argument("--hardening-setup", action="store_true", help="Verify hardening setup without running hardening campaigns.")
     parser.add_argument("--static-token-check-only", action="store_true", help="Run only the Plex token transport static check.")
+    parser.add_argument("--storage-only-check-only", action="store_true", help="Run only the local GitHub storage-only policy check.")
     args = parser.parse_args(argv)
 
     if args.static_token_check_only:
         return run_static_token_check()
+    if args.storage_only_check_only:
+        return run_storage_only_check()
 
     missing = missing_required_tools()
     if missing:
@@ -119,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Install them locally or set GITLEAKS_BIN to an executable gitleaks path.", file=sys.stderr)
         return 127
 
-    for gate in build_gates(python_version=args.python, ci=args.ci):
+    for gate in build_gates(python_version=args.python, ci=args.ci, hardening_setup=args.hardening_setup):
         result = run_gate(gate)
         if result != 0:
             print(f"Local verification failed at gate: {gate.name}", file=sys.stderr)

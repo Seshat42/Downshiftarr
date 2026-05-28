@@ -58,7 +58,8 @@ Any deployment that disables a `KILL_ON_*` toggle must document the reason, expe
 Required gates for security-sensitive changes:
 
 - Official all-up runner: `python scripts/testing/verify_local.py`.
-- CI mirror runner: `python scripts/testing/verify_local.py --ci`.
+- Local extra-hygiene runner: `python scripts/testing/verify_local.py --ci`.
+- Hardening setup runner: `python scripts/testing/verify_hardening_setup.py`; this verifies fuzz/property/monkey/chaos/mutation/boundary setup without launching campaigns.
 - Unit and simulated tests through pytest.
 - Ruff lint and format checks through the repo `pyproject.toml`.
 - Dependency audit through `pip-audit`.
@@ -70,18 +71,27 @@ Required gates for security-sensitive changes:
 - A targeted check that Plex direct API fallbacks and shim API calls do not send `X-Plex-Token` in query parameters.
 - Artifact review proving scan outputs do not include raw env files, full secrets, or unrestricted logs.
 
-## GitHub Security CI
+## Hardening Test Controls
 
-GitHub is approved for security CI, code scanning, secret protection, and daily release publication.
+- Fuzz, property-based, monkey, chaos, mutation, and boundary lanes are manual hardening campaigns, not default gates.
+- The default non-destructive test lane excludes `property`, `fuzz`, `native_fuzz`, `monkey`, `chaos`, `mutation`, and `boundary`.
+- Native fuzzing uses Atheris through the WSL Python 3.11 lane; normal local verification remains on Python 3.12.
+- Native fuzz, monkey, chaos, and mutation runners require `DOWNSHIFTARR_HARDENING_MANUAL=1` plus an explicit `--run`.
+- Hardening runners must use synthetic/fake inputs by default and must not contact Loki, Tautulli, Plex Web, browser sessions, Docker sidecars, or external Plex servers.
+- Hardening corpora, crashes, reports, and caches belong only in ignored locations such as `.hypothesis/`, `.mutmut-cache/`, and `artifacts/hardening/`.
+- Any failing seed, minimized fuzz input, or surviving mutant must be turned into a deterministic regression test before the campaign is widened.
+
+## Remote Storage Policy
+
+GitHub is approved only as remote Git storage. Local and live verification are
+the acceptance authority.
 
 Baseline controls:
 
-- GitHub Actions must not define or consume Plex, Tautulli, Loki, browser, or local test secrets.
-- Workflow token permissions must be least-privilege; release publication is the only routine job that needs `contents: write`.
-- CI must not contact Loki, Tautulli, Plex Web, browser sessions, or local Docker sidecars.
-- Security CI must run full-history Gitleaks, dependency audit, Ruff, tests, Bandit, CodeQL, tracked-file secret hygiene, and Plex token query-string checks.
-- Release jobs must publish only sdist, wheel, checksums, and GitHub provenance attestations.
-- Release artifact verification must reject env files, logs, generated media, screenshots, scan outputs, Tautulli config/database files, and token-looking values.
+- `.github/` and workflow files must be absent.
+- Remote branches other than `origin/main` must be absent at closeout.
+- No documentation may describe hosted checks, hosted releases, or pull requests as an acceptance authority.
+- Repository storage must not receive Plex, Tautulli, Loki, browser, or local test secrets.
 
 ## Local Loki Test Rig
 
@@ -126,7 +136,7 @@ Artifact rules:
 - Plex token-in-header behavior remains present in `Downshiftarr.py` and `Plex Transcoder`.
 - All `KILL_ON_*` defaults remain fail-closed unless a documented exception exists.
 - Logs have redaction coverage and bounded retention.
-- Local verification gates and GitHub security CI pass; artifacts follow the layout above.
+- Local verification gates pass; artifacts follow the layout above.
 - Daily release artifacts contain only sdist, wheel, checksums, and provenance attestations.
 - Optional `Plex Transcoder` shim deployment is separately approved and rollback-tested.
 

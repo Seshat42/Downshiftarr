@@ -24,6 +24,13 @@ test = [
     "pytest>=8.3",
     "pytest-cov>=6.0",
 ]
+hardening = [
+    "hypothesis>=6.152",
+    "mutmut>=3.3",
+]
+native-fuzz = [
+    "atheris>=2.3; python_version < '3.12'",
+]
 lint = [
     "ruff>=0.11",
 ]
@@ -33,6 +40,7 @@ security = [
 ]
 dev = [
     { include-group = "test" },
+    { include-group = "hardening" },
     { include-group = "lint" },
     { include-group = "security" },
 ]
@@ -54,6 +62,13 @@ markers = [
     "browser: opt-in browser smoke tests against local Plex Web",
     "destructive: opt-in tests allowed to mutate the local Loki Plex test library or terminate test sessions",
     "slow: intentionally slower tests excluded from tight loops unless selected",
+    "property: manual property-based hardening tests",
+    "fuzz: manual Python-level fuzz/generative hardening tests",
+    "native_fuzz: manual Atheris/libFuzzer hardening targets using the Python 3.11 WSL lane",
+    "monkey: manual seeded random-event hardening tests against fakes",
+    "chaos: manual deterministic fault-injection hardening tests against fakes",
+    "mutation: manual mutation-testing setup and configuration checks",
+    "boundary: manual boundary value analysis tests",
 ]
 
 [tool.ruff]
@@ -69,3 +84,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
 skips = ["B101"]
+
+[tool.mutmut]
+paths_to_mutate = ["Downshiftarr.py"]
+pytest_add_cli_args_test_selection = ["tests"]

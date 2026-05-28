@@ -20,23 +20,32 @@ def test_build_gates_include_official_local_verification_sequence():
         "bandit",
         "gitleaks",
         "plex-token-query-static-check",
+        "github-storage-only",
         "diff-check",
     ]
     assert gates[0].command == ["git", "status", "--short", "--branch", "--untracked-files=all"]
     assert gates[1].command == ["uv", "sync", "--all-groups", "--python", "3.12", "--locked"]
-    assert gates[2].command == ["uv", "run", "--locked", "pytest", "-m", "not loki and not browser and not destructive"]
+    assert gates[2].command == [
+        "uv",
+        "run",
+        "--locked",
+        "pytest",
+        "-m",
+        verify_local.non_destructive_marker_expression(),
+    ]
     assert gates[9].command[:3] == ["gitleaks", "detect", "--source"]
+    assert gates[-2].command == [verify_local.sys.executable, "scripts/testing/verify_local.py", "--storage-only-check-only"]
 
 
 def test_build_gates_adds_ci_hygiene_when_requested():
     gates = verify_local.build_gates(python_version="3.12", gitleaks_bin="gitleaks", ci=True)
 
     assert [gate.name for gate in gates][-3:] == [
-        "plex-token-query-static-check",
         "secret-hygiene",
+        "github-storage-only",
         "diff-check",
     ]
-    assert gates[-2].command == [verify_local.sys.executable, "scripts/testing/verify_secret_hygiene.py"]
+    assert gates[-3].command == [verify_local.sys.executable, "scripts/testing/verify_secret_hygiene.py"]
 
 
 def test_missing_tool_detection_reports_required_tools(monkeypatch):
@@ -81,7 +90,7 @@ def test_main_stops_at_first_failing_gate(monkeypatch):
     gates = [verify_local.Gate("first", ["true"]), verify_local.Gate("second", ["false"])]
     calls = []
     monkeypatch.setattr(verify_local, "missing_required_tools", lambda: [])
-    monkeypatch.setattr(verify_local, "build_gates", lambda python_version, ci=False: gates)
+    monkeypatch.setattr(verify_local, "build_gates", lambda python_version, ci=False, hardening_setup=False: gates)
 
     def fake_run_gate(gate):
         calls.append(gate.name)
@@ -98,3 +107,58 @@ def test_static_token_check_only_skips_external_tools(monkeypatch):
     monkeypatch.setattr(verify_local, "run_static_token_check", lambda: 0)
 
     assert verify_local.main(["--static-token-check-only"]) == 0
+
+
+def test_storage_only_check_rejects_github_workflows(tmp_path, monkeypatch):
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "security-ci.yml").write_text("name: ci\n", encoding="utf-8")
+    monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_local, "tracked_github_paths", lambda: [])
+    monkeypatch.setattr(verify_local, "remote_branch_names", lambda: ["origin/main"])
+
+    assert verify_local.run_storage_only_check() == 1
+
+
+def test_storage_only_check_rejects_tracked_github_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_local, "tracked_github_paths", lambda: [".github/workflows/security-ci.yml"])
+    monkeypatch.setattr(verify_local, "remote_branch_names", lambda: ["origin/main"])
+
+    assert verify_local.run_storage_only_check() == 1
+
+
+def test_storage_only_check_rejects_non_main_remote_branch(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_local, "tracked_github_paths", lambda: [])
+    monkeypatch.setattr(verify_local, "remote_branch_names", lambda: ["origin/main", "origin/codex/test"])
+
+    assert verify_local.run_storage_only_check() == 1
+
+
+def test_storage_only_check_accepts_main_only_without_github_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_local, "tracked_github_paths", lambda: [])
+    monkeypatch.setattr(verify_local, "remote_branch_names", lambda: ["origin/main"])
+
+    assert verify_local.run_storage_only_check() == 0
+
+
+def test_storage_only_check_rejects_github_ci_wording(tmp_path, monkeypatch):
+    readme = tmp_path / "README.md"
+    readme.write_text("GitHub Actions security CI is the acceptance authority.\n", encoding="utf-8")
+    monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_local, "tracked_github_paths", lambda: [])
+    monkeypatch.setattr(verify_local, "remote_branch_names", lambda: ["origin/main"])
+
+    assert verify_local.run_storage_only_check() == 1
+
+
+def test_storage_only_check_rejects_ci_mirror_wording(tmp_path, monkeypatch):
+    readme = tmp_path / "README.md"
+    readme.write_text("CI mirror command: python scripts/testing/verify_local.py --ci\n", encoding="utf-8")
+    monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_local, "tracked_github_paths", lambda: [])
+    monkeypatch.setattr(verify_local, "remote_branch_names", lambda: ["origin/main"])
+
+    assert verify_local.run_storage_only_check() == 1

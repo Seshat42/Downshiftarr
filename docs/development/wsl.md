@@ -16,10 +16,11 @@ Work from the existing checkout unless the lane explicitly says otherwise. This
 workspace is shared, so inspect status before editing and never revert unrelated
 changes.
 
-## GitHub And Local Verification
+## Remote Storage And Local Verification
 
-GitHub is approved for repository storage, security CI, code scanning, secret protection, and daily releases.
-Do not add GitHub-hosted Plex, Tautulli, Loki, browser, or local test secrets.
+GitHub is approved only as remote Git storage. Do not add hosted workflows,
+hosted checks, hosted releases, pull-request workflow dependence, or hosted
+Plex, Tautulli, Loki, browser, or local test secrets.
 
 Use plain Git remote checks when needed:
 
@@ -36,9 +37,20 @@ locked project environment:
 
 ```bash
 cd /mnt/c/Users/D3/Documents/Downshiftarr
-uv sync --all-groups
-uv run pytest -m "not loki and not browser and not destructive"
+uv sync --all-groups --python 3.12
+uv run pytest -m "not loki and not browser and not destructive and not property and not fuzz and not native_fuzz and not monkey and not chaos and not mutation and not boundary"
 ```
+
+The manual native-fuzz lane uses Atheris through a `uv`-managed Python 3.11 runtime. Runner internals use isolated
+`uv` environments so the Python 3.11 Atheris check does not replace the normal Python 3.12 project venv:
+
+```bash
+uv python install 3.11
+uv run --python 3.11 python scripts/testing/run_native_fuzz.py --list-targets
+```
+
+WSL hardening setup may require local development packages such as `clang`, `llvm`, `build-essential`, and
+`pkg-config`. These are local development tools only; do not install or reconfigure unrelated services.
 
 ## Verification Commands
 
@@ -46,7 +58,8 @@ Run the focused proof first, then broaden before closeout:
 
 ```bash
 python scripts/testing/verify_local.py
-python scripts/testing/verify_local.py --ci
+python scripts/testing/verify_local.py --ci  # local extra-hygiene alias only
+python scripts/testing/verify_hardening_setup.py
 ```
 
 For docs-only lanes, at minimum verify repository state and the intended file

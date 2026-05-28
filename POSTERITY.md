@@ -10,19 +10,18 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Workspace: `C:\Users\D3\Documents\Downshiftarr`.
 - WSL path: `/mnt/c/Users/D3/Documents/Downshiftarr`.
 - Authoritative branch: `main`.
-- GitHub may be used for repository storage, security CI, code scanning, secret protection, and daily release publication.
-- Remote-hosted automation was re-approved on 2026-05-28 for security and release workflows only; local verification remains authoritative for local runtime proof.
-- GitHub Actions repository settings on 2026-05-28: Actions enabled, allowed actions set to selected, GitHub-owned and verified actions allowed, `astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9` explicitly allowed, default workflow token permissions set to read-only.
-- GitHub security settings on 2026-05-28: secret scanning enabled, push protection enabled, Dependabot security updates enabled. Non-provider/generic secret scanning and validity checks remained disabled after API patch attempts and may require UI/account-level availability.
+- GitHub may be used only as remote Git storage for `origin/main`.
+- Prior remote-hosted automation and release decisions were superseded on 2026-05-28 by the Bragi/Downshiftarr integration decision: no hosted workflows, no hosted releases, no pull-request workflow dependence, and local/live verification is authoritative.
+- Previous repository setting observations about hosted automation are historical only and no longer describe the accepted operating model.
 - The workspace is shared with other agents or user edits; never revert others' work.
 - Always inspect `git status --short --branch` before editing.
 
 ### Operating Decisions
 
 - Work WSL-first for development, tests, lint, and security checks.
-- Use GitHub Actions only for security CI, code scanning, secret protection, and daily releases. Do not add unrelated remote automation without a new user decision.
+- Do not add remote hosted automation, hosted checks, hosted release jobs, or pull-request workflow dependence without a new user decision.
 - Official all-up local verification command: `python scripts/testing/verify_local.py`.
-- Official CI mirror command: `python scripts/testing/verify_local.py --ci`.
+- Official local extra-hygiene command: `python scripts/testing/verify_local.py --ci`.
 - Keep `AGENTS.md`, docs, and this file current when operating rules or durable decisions change.
 - Ask for clarification when requirements, ownership, risk, or expected behavior are uncertain.
 - Use subagents for independent lanes when available and useful.
@@ -42,11 +41,18 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - The optional shim remains privileged because it runs in the Plex transcode path.
 - Real tokens belong only in ignored local env files or deployment environment variables.
 - Logs, screenshots, scan output, generated media manifests, and proof artifacts must not contain secrets.
-- GitHub Actions must not receive Plex, Tautulli, Loki, browser, or local test secrets. CI uses synthetic placeholders only.
+- Git remote storage must not receive Plex, Tautulli, Loki, browser, or local test secrets.
 
 ### Robust Test Environment
 
 - The repository has a layered local test rig: fast unit tests, deterministic simulated Plex/Tautulli/client tests, generated-media tests, and opt-in Loki Plex integration.
+- Hardening setup now includes manual-only fuzz, property-based, monkey, chaos, mutation, and boundary value lanes. Setup verification is separate from campaign execution.
+- Official hardening setup command: `python scripts/testing/verify_hardening_setup.py`.
+- Durable hardening run checklist: `docs/testing/hardening-initial-runs.md`.
+- Native Atheris fuzzing uses the WSL Python 3.11 lane managed by `uv`; normal project gates continue to use Python 3.12.
+- User approved installation of required development tools. On 2026-05-28, WSL build tooling was installed with root for clang, LLVM, build-essential, and pkg-config; Ubuntu did not publish `python3.11` apt packages in this environment, so `uv python install 3.11` was used.
+- Hardening campaigns are not run automatically by `scripts/testing/verify_local.py`; the default non-destructive pytest lane excludes `property`, `fuzz`, `native_fuzz`, `monkey`, `chaos`, `mutation`, and `boundary`.
+- Native fuzz, monkey, chaos, and mutation runners require `DOWNSHIFTARR_HARDENING_MANUAL=1` plus `--run`; list and dry-run modes are the setup-safe default.
 - Loki is the local Windows Plex server for real integration proof only.
 - WSL remains the primary deterministic verification shell.
 - Windows PowerShell is the runner for real Loki checks because Windows can reach `http://127.0.0.1:32400` and WSL currently cannot.
@@ -76,16 +82,28 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - A: Yes, but only for the dedicated Loki generated-media test lane after `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1` is set in ignored local config.
 
 - Q: Should remote automation or remote code scanning run for this repo?
-- A: Updated on 2026-05-28. Yes, but only for security CI, code scanning, secret protection, and daily releases. Real local-service proof remains local.
+- A: Superseded on 2026-05-28. No; GitHub is remote Git storage only. Real local-service proof remains local.
 
 - Q: How often should GitHub releases be created?
-- A: At most one release per America/New_York day, created by the nightly workflow only when `main` changed since the previous release. Tags use `daily-YYYY-MM-DD`; old version tags are preserved.
+- A: Superseded on 2026-05-28. Do not create automated hosted releases in this pass; old tags are preserved but not an acceptance path.
 
-- Q: May GitHub Actions receive real local integration credentials?
-- A: No. Plex, Tautulli, Loki, browser, Docker sidecar, and local test secrets stay out of GitHub. Hosted workflows run synthetic and repository-only checks.
+- Q: May hosted automation receive real local integration credentials?
+- A: No. Plex, Tautulli, Loki, browser, Docker sidecar, and local test secrets stay out of Git remote storage and any future hosted automation.
 
 - Q: How are smart TV and other client behaviors covered without every device present?
 - A: The simulated harness models Plex Web, Roku, Apple TV, Android TV/Fire TV, Chromecast, Samsung Tizen, LG webOS, consoles, mobile, Plex HTPC, relay, and unknown clients. Real devices can be added as follow-up proof, but deterministic simulated coverage comes first.
 
 - Q: May the local Tautulli test setup use existing installs or other project containers?
 - A: No. The Tautulli sidecar must use Downshiftarr-only Docker names, labels, loopback ports, ignored config, and label-guarded cleanup.
+
+- Q: Should the fuzz/property/monkey/chaos/mutation/boundary hardening setup run the initial campaigns now?
+- A: No. This phase is setup only. It must create the environment, scripts, tests, and durable checklist, then leave the first real campaign runs as manual follow-up commands.
+
+- Q: Which native fuzzing engine is required?
+- A: Atheris is required for the native fuzz lane, isolated to WSL Python 3.11 through `uv`.
+
+- Q: Which mutation runner is the default?
+- A: `mutmut` is the default mutation-testing runner.
+
+- Q: May development tools be installed for this setup?
+- A: Yes. The user approved installing any needed development tools.

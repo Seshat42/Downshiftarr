@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.parse
@@ -206,6 +207,134 @@ VIDEO_EXTENSIONS: Tuple[str, ...] = (
     ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv",
     ".ts", ".flv", ".webm", ".3gp", ".mpeg", ".mpg",
 )
+
+
+# --- 11) External config -------------------------------------------------------------
+
+# Optional JSON config path. Bragi uses this so the installed shim binary can stay
+# immutable while policy values live under /etc/downshiftarr.
+SHIM_CONFIG_ENV_VAR: str = "DOWNSHIFTARR_SHIM_CONFIG"
+
+_CONFIG_SCHEMA: Dict[str, type] = {
+    "REAL_TRANSCODER_PATH": str,
+    "REAL_TRANSCODER_SUFFIX": str,
+    "LOG_FILE": str,
+    "LOG_LEVEL": str,
+    "PLEX_URL": str,
+    "PLEX_HTTP_TIMEOUT_S": float,
+    "PLEX_SEARCH_LIMIT_PER_HUB": int,
+    "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
+    "SKIP_WHEN_VIDEO_CODEC_COPY": bool,
+    "MAX_ALLOWED_HEIGHT": int,
+    "MAX_FALLBACK_HEIGHT": int,
+    "PREFER_HEIGHTS": tuple,
+    "FALLBACK_SDR_ONLY": bool,
+    "ALLOW_HDR_FALLBACK": bool,
+    "TREAT_TONEMAP_ARGS_AS_HDR": bool,
+    "FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED": bool,
+    "KILL_TRANSCODE_IF_NO_FALLBACK": bool,
+    "KILL_TRANSCODE_IF_UNSURE": bool,
+    "STRIP_HDR_TONEMAP_FILTERS": bool,
+    "REMOVE_BITRATE_LIMITS": bool,
+    "REQUIRE_STREAM_INDEX_COMPATIBILITY": bool,
+    "ENABLE_CACHE": bool,
+    "CACHE_FILE": str,
+    "CACHE_TTL_S": int,
+}
+
+
+def _coerce_config_value(key: str, value: object) -> object:
+    expected = _CONFIG_SCHEMA[key]
+    if expected is bool:
+        if not isinstance(value, bool):
+            raise RuntimeError(f"Shim config key {key} must be boolean")
+        return value
+    if expected is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeError(f"Shim config key {key} must be integer")
+        return value
+    if expected is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"Shim config key {key} must be numeric")
+        return float(value)
+    if expected is tuple:
+        if not isinstance(value, list) or any(isinstance(v, bool) or not isinstance(v, int) for v in value):
+            raise RuntimeError(f"Shim config key {key} must be a list of integers")
+        return tuple(value)
+    if expected is str:
+        if not isinstance(value, str):
+            raise RuntimeError(f"Shim config key {key} must be string")
+        if key == "REAL_TRANSCODER_SUFFIX" and not value:
+            raise RuntimeError("Shim config key REAL_TRANSCODER_SUFFIX must not be empty")
+        return value
+    raise RuntimeError(f"Unsupported shim config schema type for {key}")
+
+
+def _reject_unsafe_parent_dirs(config_path: str) -> None:
+    parent = os.path.abspath(os.path.dirname(config_path) or ".")
+    while True:
+        if os.path.islink(parent):
+            raise RuntimeError("Shim config parent directory must not be a symlink")
+        st = os.stat(parent)
+        world_writable = bool(st.st_mode & stat.S_IWOTH)
+        group_writable = bool(st.st_mode & stat.S_IWGRP)
+        sticky_root_dir = bool(st.st_mode & stat.S_ISVTX) and st.st_uid == 0
+        if (world_writable or group_writable) and not sticky_root_dir:
+            raise RuntimeError("Shim config parent directory is writable by group or other")
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            break
+        parent = next_parent
+
+
+def _open_external_config(config_path: str):
+    def opener(path: str, flags: int):
+        return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
+
+    return open(config_path, "r", encoding="utf-8", opener=opener)
+
+
+def _validate_external_config_file(config_path: str, handle) -> None:
+    st = os.fstat(handle.fileno())
+    if not stat.S_ISREG(st.st_mode):
+        raise RuntimeError("Shim config file must be a regular file")
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise RuntimeError("Shim config file must not be writable by group or other")
+    if st.st_uid not in {0, os.getuid()}:
+        raise RuntimeError("Shim config file must be owned by root or the Plex service user")
+
+
+def _load_external_config() -> None:
+    config_path = os.environ.get(SHIM_CONFIG_ENV_VAR, "").strip()
+    if not config_path:
+        return
+    if not os.path.isabs(config_path):
+        raise RuntimeError("Shim config file path must be absolute")
+    _reject_unsafe_parent_dirs(config_path)
+    if not os.path.isfile(config_path):
+        raise RuntimeError(f"Shim config file is missing: {config_path}")
+    if os.path.islink(config_path):
+        raise RuntimeError("Shim config file must not be a symlink")
+
+    try:
+        with _open_external_config(config_path) as handle:
+            _validate_external_config_file(config_path, handle)
+            data = json.load(handle)
+    except OSError as exc:
+        raise RuntimeError(f"Shim config file could not be opened safely: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Shim config file is not valid JSON: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError("Shim config file must contain a JSON object")
+
+    for key, value in data.items():
+        if key not in _CONFIG_SCHEMA:
+            raise RuntimeError(f"Unsupported shim config key: {key}")
+        globals()[key] = _coerce_config_value(key, value)
+
+
+_load_external_config()
 
 
 # =====================================================================================
@@ -906,19 +1035,25 @@ def rewrite_args_for_performance(
 
 def resolve_real_transcoder_path() -> str:
     """Resolve the on-disk path to the real Plex Transcoder binary."""
+    shim_path = os.path.realpath(sys.argv[0])
     if REAL_TRANSCODER_PATH.strip():
+        real_path = os.path.realpath(REAL_TRANSCODER_PATH.strip())
+        if real_path == shim_path:
+            raise RuntimeError("Real transcoder path must not resolve to the shim itself")
         return REAL_TRANSCODER_PATH.strip()
 
     # Default: same directory as this shim, plus suffix.
-    shim_path = os.path.realpath(sys.argv[0])
     candidate = shim_path + REAL_TRANSCODER_SUFFIX
+    if os.path.realpath(candidate) == shim_path:
+        raise RuntimeError("Real transcoder suffix must not resolve to the shim itself")
     if os.path.exists(candidate) and os.access(candidate, os.X_OK):
         return candidate
 
-    # Common Plex locations (best-effort).
+    # Common diverted Plex locations. Never fall back to the undiverted
+    # "Plex Transcoder" path; that can recurse into this shim.
     common = [
         "/usr/lib/plexmediaserver/Plex Transcoder" + REAL_TRANSCODER_SUFFIX,
-        "/usr/lib/plexmediaserver/Plex Transcoder",  # last-ditch fallback (may recurse!)
+        "/usr/lib/plexmediaserver/Plex Transcoder.downshiftarr-real",
     ]
     for p in common:
         if os.path.exists(p) and os.access(p, os.X_OK) and os.path.realpath(p) != shim_path:

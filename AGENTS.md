@@ -21,8 +21,8 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - Before editing, inspect current file state and `git status` so ownership is clear.
 - Do not merge, delete, or rewrite branches unless the user explicitly authorizes the phase. The 2026-05-28 single-main consolidation was explicitly authorized; keep future branch work deliberate and recorded.
 - Keep branch-collision risks visible in `POSTERITY.md`, including active branches, uncommitted files, and any discovered conflicts.
-- GitHub is approved for repository storage, security CI, code scanning, secret protection, and daily release publication only.
-- Do not add GitHub-hosted Plex, Tautulli, Loki, browser, or local test secrets. GitHub Actions must use synthetic placeholders and must never contact real local services.
+- GitHub is approved only as remote Git storage. Do not add workflows, hosted checks, hosted releases, issues, projects, wiki, discussions, or pull-request workflow dependence.
+- Do not add GitHub-hosted Plex, Tautulli, Loki, browser, or local test secrets.
 - Local verification remains authoritative for local runtime proof. Use `scripts/testing/verify_local.py` and the documented WSL gates before pushing to `origin`.
 
 ## Implementation Standards
@@ -46,7 +46,8 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - Record verification commands and results in the final response for each task.
 - If verification cannot be run, state why and record the remaining risk.
 - The official all-up gate is `python scripts/testing/verify_local.py` from the repository root.
-- The CI mirror gate is `python scripts/testing/verify_local.py --ci`; it adds tracked-file secret hygiene and release-input safety checks without real-service access.
+- The legacy `--ci` flag is a local extra-hygiene alias only. It is not a hosted check and is not an acceptance authority.
+- Manual hardening campaigns are not part of the default local gate. Use `python scripts/testing/verify_hardening_setup.py` to verify setup only, and use `docs/testing/hardening-initial-runs.md` for the intentionally manual fuzz/property/monkey/chaos/mutation/boundary run list.
 - For docs-only lanes, verify at minimum that only intended documentation files changed, plus any relevant repository state checks.
 
 ## Test Rig Rules
@@ -58,3 +59,4 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - The local Tautulli sidecar must be isolated to `downshiftarr-tautulli`, Downshiftarr labels, loopback ports, and ignored `artifacts/local-tautulli/` config.
 - Never stop, remove, reconfigure, or rely on containers, ports, libraries, or installs owned by other projects.
 - Destructive Loki tests require explicit local opt-in through `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1`.
+- Hardening runners for native fuzz, monkey, chaos, and mutation require `DOWNSHIFTARR_HARDENING_MANUAL=1` plus an explicit `--run` flag. These runners must default to list or dry-run behavior, use fakes/synthetic inputs unless a future plan explicitly says otherwise, redact known secret env values, and keep corpora/crashes/reports under ignored hardening artifact paths.

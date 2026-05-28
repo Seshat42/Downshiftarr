@@ -74,3 +74,124 @@ def test_shim_rewrites_tonemap_filters_when_swapping_to_sdr(monkeypatch):
     assert "12000k" not in rewritten
     assert any("null" in arg for arg in rewritten)
     assert all("tonemap=hable" not in arg for arg in rewritten)
+
+
+def test_shim_loads_external_json_config_before_runtime(monkeypatch, tmp_path):
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text(
+        """{
+          "PLEX_URL": "http://10.67.0.2:32400",
+          "PLEX_HTTP_TIMEOUT_S": 0.25,
+          "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
+          "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
+          "KILL_TRANSCODE_IF_UNSURE": true,
+          "REMOVE_BITRATE_LIMITS": true
+        }""",
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    shim = load_shim()
+
+    assert shim.PLEX_URL == "http://10.67.0.2:32400"
+    assert shim.PLEX_HTTP_TIMEOUT_S == 0.25
+    assert shim.CACHE_FILE == "/var/lib/downshiftarr/plex-transcoder-cache.json"
+    assert shim.LOG_FILE == "/var/log/downshiftarr/plex-transcoder-shim.log"
+    assert shim.KILL_TRANSCODE_IF_UNSURE is True
+    assert shim.REMOVE_BITRATE_LIMITS is True
+
+
+def test_shim_rejects_unknown_external_config_keys(monkeypatch, tmp_path):
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text('{"PLEX_URL": "http://127.0.0.1:32400", "UNREVIEWED_FLAG": true}', encoding="utf-8")
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    with pytest.raises(RuntimeError, match="Unsupported shim config key"):
+        load_shim()
+
+
+def test_shim_rejects_wrong_external_config_value_types(monkeypatch, tmp_path):
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text('{"PLEX_HTTP_TIMEOUT_S": "slow"}', encoding="utf-8")
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    with pytest.raises(RuntimeError, match="PLEX_HTTP_TIMEOUT_S must be numeric"):
+        load_shim()
+
+
+def test_shim_rejects_relative_external_config_path(monkeypatch):
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", "shim-config.json")
+
+    with pytest.raises(RuntimeError, match="path must be absolute"):
+        load_shim()
+
+
+def test_shim_rejects_symlink_external_config(monkeypatch, tmp_path):
+    target = tmp_path / "shim-config.json"
+    target.write_text("{}", encoding="utf-8")
+    target.chmod(0o600)
+    link = tmp_path / "shim-config-link.json"
+    link.symlink_to(target)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(link))
+
+    with pytest.raises(RuntimeError, match="symlink|opened safely"):
+        load_shim()
+
+
+def test_shim_rejects_group_or_world_writable_external_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    config_path.chmod(0o666)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    with pytest.raises(RuntimeError, match="writable by group or other"):
+        load_shim()
+
+
+def test_shim_rejects_empty_external_transcoder_suffix(monkeypatch, tmp_path):
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text('{"REAL_TRANSCODER_SUFFIX": ""}', encoding="utf-8")
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    with pytest.raises(RuntimeError, match="REAL_TRANSCODER_SUFFIX must not be empty"):
+        load_shim()
+
+
+def test_shim_never_resolves_to_undiverted_transcoder(monkeypatch, tmp_path):
+    shim = load_shim()
+    shim_path = tmp_path / "Plex Transcoder"
+    monkeypatch.setattr(shim, "REAL_TRANSCODER_PATH", "")
+    monkeypatch.setattr(shim.sys, "argv", [str(shim_path)])
+
+    real_exists = {"/usr/lib/plexmediaserver/Plex Transcoder": True}
+    monkeypatch.setattr(shim.os.path, "exists", lambda path: real_exists.get(path, False))
+    monkeypatch.setattr(shim.os, "access", lambda path, mode: real_exists.get(path, False))
+
+    assert shim.resolve_real_transcoder_path() == str(shim_path) + "_REAL"
+
+
+def test_shim_rejects_suffix_candidate_self_reference(monkeypatch, tmp_path):
+    shim = load_shim()
+    shim_path = tmp_path / "Plex Transcoder"
+    shim_path.write_text("# shim\n", encoding="utf-8")
+    monkeypatch.setattr(shim.sys, "argv", [str(shim_path)])
+    monkeypatch.setattr(shim, "REAL_TRANSCODER_PATH", "")
+    monkeypatch.setattr(shim, "REAL_TRANSCODER_SUFFIX", "")
+
+    with pytest.raises(RuntimeError, match="suffix must not resolve"):
+        shim.resolve_real_transcoder_path()
+
+
+def test_shim_rejects_explicit_real_transcoder_self_reference(monkeypatch, tmp_path):
+    shim = load_shim()
+    shim_path = tmp_path / "Plex Transcoder"
+    shim_path.write_text("# shim\n", encoding="utf-8")
+    monkeypatch.setattr(shim.sys, "argv", [str(shim_path)])
+    monkeypatch.setattr(shim, "REAL_TRANSCODER_PATH", str(shim_path))
+
+    with pytest.raises(RuntimeError, match="must not resolve to the shim itself"):
+        shim.resolve_real_transcoder_path()

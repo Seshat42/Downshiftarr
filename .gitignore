@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
+.mutmut-cache/
 .coverage
 coverage.xml
 htmlcov/
@@ -19,12 +21,14 @@ Downshiftarr.test.env
 
 # Runtime logs and caches
 *.log
+*.log.*
 downshiftarr.log
 plex_transcoder_shim.log
 downshiftarr_plex_transcoder_cache.json
 
 # Local/generated test rig output
 artifacts/
+artifacts/hardening/
 build/
 dist/
 release-notes.md

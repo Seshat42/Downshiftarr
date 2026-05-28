@@ -86,24 +86,25 @@ This is an advanced install. Rollback plan is provided below.
 
 2) **Stop Plex Media Server**.
 
-3) **Rename the real transcoder** (keep the name the shim expects):
+3) **Divert the real transcoder** and preserve it under an explicit name:
 
 ```bash
-cd /usr/lib/plexmediaserver
-mv "Plex Transcoder" "Plex Transcoder_REAL"
+sudo dpkg-divert --package downshiftarr --rename \
+  --divert "/usr/lib/plexmediaserver/Plex Transcoder.downshiftarr-real" \
+  "/usr/lib/plexmediaserver/Plex Transcoder"
 ```
 
 4) **Copy this repo’s shim into place** as the new `Plex Transcoder` and make it executable:
 
 ```bash
-cp "/path/to/Downshiftarr/Plex Transcoder" "/usr/lib/plexmediaserver/Plex Transcoder"
-chmod +x "/usr/lib/plexmediaserver/Plex Transcoder" "/usr/lib/plexmediaserver/Plex Transcoder_REAL"
+sudo install -m 0755 "/path/to/Downshiftarr/Plex Transcoder" "/usr/lib/plexmediaserver/Plex Transcoder"
+sudo chmod 0755 "/usr/lib/plexmediaserver/Plex Transcoder.downshiftarr-real"
 ```
 
 5) **Ensure Python 3 exists in the environment where Plex runs.**
    - If Plex runs in Docker, Python must exist **inside the container**.
 
-6) **Configure the shim** by editing the config block at the top of the `Plex Transcoder` file.
+6) **Configure the shim** with an external JSON file and point Plex at it through `DOWNSHIFTARR_SHIM_CONFIG`.
 
 7) **Start Plex Media Server**.
 
@@ -113,18 +114,35 @@ If anything goes sideways:
 
 ```bash
 cd /usr/lib/plexmediaserver
-mv "Plex Transcoder" "Plex Transcoder_SHIM_BROKEN"
-mv "Plex Transcoder_REAL" "Plex Transcoder"
+sudo rm -f "Plex Transcoder"
+sudo dpkg-divert --package downshiftarr --rename --remove "Plex Transcoder"
 ```
 
 ### Shim configuration
 
-All shim configuration is set **inside the shim file**. No `.env` is used.
+Production shim configuration should be external JSON. Set `DOWNSHIFTARR_SHIM_CONFIG`
+to the JSON file path before Plex launches the shim. Bragi stores this under
+`/etc/downshiftarr/plex-transcoder-shim.json` so the installed shim binary stays
+immutable and reviewable.
+
+Example:
+
+```json
+{
+  "REAL_TRANSCODER_PATH": "/usr/lib/plexmediaserver/Plex Transcoder.downshiftarr-real",
+  "PLEX_URL": "http://10.67.0.2:32400",
+  "PLEX_HTTP_TIMEOUT_S": 0.35,
+  "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
+  "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
+  "KILL_TRANSCODE_IF_NO_FALLBACK": true,
+  "KILL_TRANSCODE_IF_UNSURE": true
+}
+```
 
 Key settings you’ll care about first:
 
 - `PLEX_URL` – usually `http://127.0.0.1:32400` inside the Plex container/host.
-- `PLEX_TOKEN` – can be left blank; the shim will try to use `X_PLEX_TOKEN` from Plex’s environment.
+- `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens only through Plex's `X_PLEX_TOKEN` environment, `PLEX_TOKEN`, or `PLEX_USER_TOKEN` process environment.
 - `MAX_ALLOWED_HEIGHT` – default `2000` (treats ~2160p as protected).
 - `MAX_FALLBACK_HEIGHT` – default `1080`.
 - `PREFER_HEIGHTS` – default `(1080, 720, 576, 480)`.
@@ -176,9 +194,9 @@ The repository is maintained WSL-first. From the project root:
 python scripts/testing/verify_local.py
 ```
 
-GitHub is used for repository storage, security CI, code scanning, secret protection, and daily releases. Real Plex/Tautulli/Loki proof remains local and WSL/Windows guarded; GitHub Actions never receive local service secrets.
+GitHub is used only as remote Git storage. Real Plex/Tautulli/Loki proof remains local and WSL/Windows guarded.
 
-CI mirrors the local gate with:
+Optional local extra hygiene can be run with:
 
 ```bash
 python scripts/testing/verify_local.py --ci
@@ -190,6 +208,15 @@ Testing docs:
 - `docs/testing/client-matrix.md` lists simulated Plex client profiles and scenarios.
 - `docs/testing/loki-runbook.md` covers the opt-in Windows Loki Plex integration lane.
 - `docs/testing/tautulli-sidecar.md` covers the isolated local Tautulli Docker sidecar.
+- `docs/testing/hardening-test-environment.md` covers manual fuzz, property-based, monkey, chaos, mutation, and boundary setup.
+- `docs/testing/hardening-initial-runs.md` is the durable checklist of first hardening commands to run after setup.
+
+Hardening setup can be verified without launching campaigns:
+
+```bash
+python scripts/testing/verify_hardening_setup.py
+python scripts/testing/list_hardening_runs.py --check
+```
 
 Real Plex tests are local-only and guarded. Copy `Downshiftarr.test.env.example` to `Downshiftarr.test.env`, fill in local Loki values, and run the Windows wrapper only when you intentionally want real-server proof:
 

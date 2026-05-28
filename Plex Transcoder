@@ -130,7 +130,7 @@ MAX_FALLBACK_HEIGHT: int = 1080
 
 # Preferred fallback heights in priority order.
 # Keep aligned with Downshiftarr.env PREFER_HEIGHTS.
-PREFER_HEIGHTS: Tuple[int, ...] = (1080, 720, 576, 480)
+PREFER_HEIGHTS: Tuple[int, ...] = (1080, 720, 576, 480, 360)
 
 # Dynamic range policy.
 # - If True: only swap to SDR fallbacks.
@@ -149,6 +149,11 @@ TREAT_TONEMAP_ARGS_AS_HDR: bool = True
 #
 # This saves one Plex API call for the *common* case (non-protected transcodes).
 FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED: bool = True
+
+# If a client is still transcoding an already downshifted SDR source, keep moving
+# to the next lower available version until the lowest configured version remains.
+AUTO_WATERFALL_ON_CONTINUED_TRANSCODE: bool = True
+WATERFALL_MIN_HEIGHT: int = 360
 
 
 # --- 6) Enforcement (fail-open vs fail-closed) ---------------------------------------
@@ -232,6 +237,8 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "ALLOW_HDR_FALLBACK": bool,
     "TREAT_TONEMAP_ARGS_AS_HDR": bool,
     "FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED": bool,
+    "AUTO_WATERFALL_ON_CONTINUED_TRANSCODE": bool,
+    "WATERFALL_MIN_HEIGHT": int,
     "KILL_TRANSCODE_IF_NO_FALLBACK": bool,
     "KILL_TRANSCODE_IF_UNSURE": bool,
     "STRIP_HDR_TONEMAP_FILTERS": bool,
@@ -857,6 +864,16 @@ def is_protected_source(mi: MediaInfo) -> bool:
     return False
 
 
+def should_waterfall_continued_transcode(mi: MediaInfo) -> bool:
+    if not AUTO_WATERFALL_ON_CONTINUED_TRANSCODE:
+        return False
+    if mi.height is None or mi.height <= WATERFALL_MIN_HEIGHT:
+        return False
+    if is_protected_source(mi):
+        return False
+    return True
+
+
 def pick_best_fallback(
     full_item: dict,
     current: MediaInfo,
@@ -1145,7 +1162,11 @@ def main() -> None:
     if FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED:
         current_quick = find_current_media(search_item, input_file)
         if current_quick and current_quick.height is not None:
-            if (not is_protected_source(current_quick)) and (not args_indicate_hdr_tonemap(args)):
+            if (
+                (not is_protected_source(current_quick))
+                and (not should_waterfall_continued_transcode(current_quick))
+                and (not args_indicate_hdr_tonemap(args))
+            ):
                 exec_real_transcoder(real, args)
                 return
 
@@ -1172,21 +1193,29 @@ def main() -> None:
     if (not protected) and (current.dyn_range_class == "UNKNOWN") and args_indicate_hdr_tonemap(args):
         # Plex is tonemapping, so treat the source as HDR even if metadata didn't say so.
         protected = True
+    continued_waterfall = (not protected) and should_waterfall_continued_transcode(current)
 
-    if not protected:
+    if not protected and not continued_waterfall:
         exec_real_transcoder(real, args)
         return
 
-    log(
-        "INFO",
-        f"Protected source detected: height={current.height} dyn_range={current.dyn_range_class} "
-        f"file={os.path.basename(current.file_path)}",
-    )
+    if protected:
+        log(
+            "INFO",
+            f"Protected source detected: height={current.height} dyn_range={current.dyn_range_class} "
+            f"file={os.path.basename(current.file_path)}",
+        )
+    else:
+        log(
+            "INFO",
+            f"Continued transcode waterfall: height={current.height} dyn_range={current.dyn_range_class} "
+            f"file={os.path.basename(current.file_path)}",
+        )
 
     fallback = pick_best_fallback(full_item, current, req_stream_max)
     if not fallback:
         log("WARNING", "No compliant fallback version found (or none passed stream safety checks)")
-        if KILL_TRANSCODE_IF_NO_FALLBACK:
+        if protected and KILL_TRANSCODE_IF_NO_FALLBACK:
             log("ERROR", "Policy: killing protected transcode (KILL_TRANSCODE_IF_NO_FALLBACK=1)")
             sys.exit(1)
         exec_real_transcoder(real, args)

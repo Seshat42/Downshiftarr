@@ -55,6 +55,83 @@ def test_shim_fallback_selection_prefers_sdr_1080(monkeypatch):
     assert fallback.dyn_range_class == "SDR"
 
 
+def test_shim_fallback_selection_includes_360p_waterfall(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(shim, "MAX_FALLBACK_HEIGHT", 1080)
+    monkeypatch.setattr(shim, "FALLBACK_SDR_ONLY", True)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+
+    current = shim.build_media_info(shim_media("/media/movie-480-sdr.mkv", 480, "SDR"))
+    item = {
+        "Media": [
+            shim_media("/media/movie-1080-sdr.mkv", 1080, "SDR"),
+            shim_media("/media/movie-480-sdr.mkv", 480, "SDR"),
+            shim_media("/media/movie-360-sdr.mkv", 360, "SDR"),
+        ]
+    }
+
+    fallback = shim.pick_best_fallback(item, current, required_max_stream=None)
+
+    assert fallback.file_path == "/media/movie-360-sdr.mkv"
+
+
+def test_shim_waterfalls_unprotected_transcode_to_lower_version(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    captured = {}
+
+    input_file = "/media/movie-1080-sdr.mkv"
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False)
+    monkeypatch.setattr(shim, "AUTO_WATERFALL_ON_CONTINUED_TRANSCODE", True)
+    monkeypatch.setattr(shim, "WATERFALL_MIN_HEIGHT", 360)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+    monkeypatch.setattr(shim, "plex_find_item_by_file", lambda path: ("rk-1", {"Media": [shim_media(input_file, 1080, "SDR")]}))
+    monkeypatch.setattr(
+        shim,
+        "plex_fetch_full_metadata",
+        lambda rating_key: {
+            "Media": [
+                shim_media(input_file, 1080, "SDR"),
+                shim_media("/media/movie-720-sdr.mkv", 720, "SDR"),
+                shim_media("/media/movie-360-sdr.mkv", 360, "SDR"),
+            ]
+        },
+    )
+
+    shim.main()
+
+    assert captured["real"] == str(real)
+    assert captured["args"][1] == "/media/movie-720-sdr.mkv"
+
+
+def test_shim_passes_through_when_continued_waterfall_has_no_lower_version(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    captured = {}
+
+    input_file = "/media/movie-360-sdr.mkv"
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False)
+    monkeypatch.setattr(shim, "AUTO_WATERFALL_ON_CONTINUED_TRANSCODE", True)
+    monkeypatch.setattr(shim, "WATERFALL_MIN_HEIGHT", 360)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+    monkeypatch.setattr(shim, "plex_find_item_by_file", lambda path: ("rk-1", {"Media": [shim_media(input_file, 360, "SDR")]}))
+
+    shim.main()
+
+    assert captured["args"][1] == input_file
+
+
 def test_shim_rewrites_tonemap_filters_when_swapping_to_sdr(monkeypatch):
     shim = load_shim()
     monkeypatch.setattr(shim, "REMOVE_BITRATE_LIMITS", True)

@@ -53,7 +53,9 @@ Options are set in the .env file:
 
 Policy knobs:
   MAX_ALLOWED_HEIGHT=2000                 # >=2000 treated as "4K-ish"
-  PREFER_HEIGHTS=720,1080,576,480         # fallback preference order (kept v0.7.0 default)
+  PREFER_HEIGHTS=1080,720,576,480,360     # fallback preference order
+  AUTO_WATERFALL_ON_CONTINUED_TRANSCODE=1 # continue stepping down if transcode persists
+  WATERFALL_MIN_HEIGHT=360                # lowest automatic waterfall target
   EXEMPT_USERS=user1,user2                # comma-separated Plex usernames
 
 Fallback selection:
@@ -211,15 +213,18 @@ TAUTULLI_LOG_SUBJECT = env_str("TAUTULLI_LOG_SUBJECT", "Downshiftarr")
 EXEMPT_USERS = env_csv_set("EXEMPT_USERS", "")
 
 MAX_ALLOWED_HEIGHT = env_int("MAX_ALLOWED_HEIGHT", 2000) or 2000  # <2000 ~= avoid 2160p
-PREFER_HEIGHTS = tuple(int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480").split(",") if x.strip().isdigit()) or (
+PREFER_HEIGHTS = tuple(int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480,360").split(",") if x.strip().isdigit()) or (
     1080,
     720,
     576,
     480,
+    360,
 )
 
 FALLBACK_SDR_ONLY = env_bool("FALLBACK_SDR_ONLY", True)
 ALLOW_HDR_FALLBACK = env_bool("ALLOW_HDR_FALLBACK", False)
+AUTO_WATERFALL_ON_CONTINUED_TRANSCODE = env_bool("AUTO_WATERFALL_ON_CONTINUED_TRANSCODE", True)
+WATERFALL_MIN_HEIGHT = env_int("WATERFALL_MIN_HEIGHT", 360) or 360
 
 # Session lookup tuning
 SESSION_LOOKUP_RETRIES = env_int("SESSION_LOOKUP_RETRIES", 4) or 4
@@ -580,6 +585,20 @@ def is_high_quality(height: Optional[int], dyn_range: str) -> bool:
     if drc not in ("SDR", "UNKNOWN"):
         return True
     return False
+
+
+def should_waterfall_continued_transcode(height: Optional[int], dyn_range: str) -> bool:
+    """
+    True when the stream is already on an unprotected version but still transcoding,
+    so another lower available version may be a better client fit.
+    """
+    if not AUTO_WATERFALL_ON_CONTINUED_TRANSCODE:
+        return False
+    if height is None or height <= WATERFALL_MIN_HEIGHT:
+        return False
+    if is_high_quality(height, dyn_range):
+        return False
+    return True
 
 
 def fetch_library_item(plex, rating_key: str):
@@ -1110,17 +1129,14 @@ def main(argv: List[str]) -> int:
 
     # Confirm current media identity (source-of-truth)
     cur_mid, cur_h, cur_dr = current_media_identity(ctx.session_item)
-    cur_drc = classify_dynamic_range(cur_dr)
     log.debug("Current media: id=%s height=%s dyn_range=%s", cur_mid, cur_h, cur_dr)
 
-    # If the current source isn't high-quality, policy doesn't apply (you're just transcoding normal stuff).
-    if not is_high_quality(cur_h, cur_dr):
-        log_event("DEBUG", "Current source not high-quality (h=%s, dr=%s). No action." % (cur_h, cur_dr), ev=ev, ctx=ctx)
-        return 0
+    protected_source = is_high_quality(cur_h, cur_dr)
+    continued_waterfall = should_waterfall_continued_transcode(cur_h, cur_dr)
 
-    # If we're already on a non-4K SDR version, don't thrash.
-    if cur_h is not None and cur_h < MAX_ALLOWED_HEIGHT and cur_drc == "SDR":
-        log_event("DEBUG", "Already on <4K SDR. No further action.", ev=ev, ctx=ctx)
+    # If the current source isn't protected and waterfall is not useful, policy doesn't apply.
+    if not protected_source and not continued_waterfall:
+        log_event("DEBUG", "Current source not high-quality (h=%s, dr=%s). No action." % (cur_h, cur_dr), ev=ev, ctx=ctx)
         return 0
 
     # Choose a fallback
@@ -1134,13 +1150,13 @@ def main(argv: List[str]) -> int:
             target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr)
         except Exception as e:
             log_event("WARNING", "Unable to fetch library item for fallback selection: %s" % e, ev=ev, ctx=ctx)
-            if KILL_ON_NO_FALLBACK_MEDIA:
+            if protected_source and KILL_ON_NO_FALLBACK_MEDIA:
                 terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
             return 0
 
     if target_idx is None:
         log_event("WARNING", "No suitable fallback media found (per policy/config).", ev=ev, ctx=ctx)
-        if KILL_ON_NO_FALLBACK_MEDIA:
+        if protected_source and KILL_ON_NO_FALLBACK_MEDIA:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
         return 0
 
@@ -1158,7 +1174,13 @@ def main(argv: List[str]) -> int:
 
         log_event(
             "INFO",
-            "Downshifting: mediaIndex=%s offset_ms=%s via_client_id=%s" % (target_idx, view_offset, identifier_used),
+            "%s: mediaIndex=%s offset_ms=%s via_client_id=%s"
+            % (
+                "Waterfall downshift" if continued_waterfall and not protected_source else "Downshifting",
+                target_idx,
+                view_offset,
+                identifier_used,
+            ),
             ev=ev,
             ctx=ctx,
         )

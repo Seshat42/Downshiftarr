@@ -107,3 +107,14 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 
 - Q: May development tools be installed for this setup?
 - A: Yes. The user approved installing any needed development tools.
+
+- Q: Should Downshiftarr stop after a single 4K/HDR downshift?
+- A: No. On 2026-05-28 the user required automatic waterfall behavior: if a client continues video-transcoding after the first downshift, Downshiftarr should keep stepping through lower available versions down to the lowest configured target, 360p by default. The lowest-version case should preserve Plex UX and pass through rather than terminate solely because no lower version exists.
+
+### 2026-05-28 Waterfall Hardening
+
+- Added default-enabled `AUTO_WATERFALL_ON_CONTINUED_TRANSCODE=1` and `WATERFALL_MIN_HEIGHT=360` to the Tautulli script and Plex Transcoder shim paths.
+- Expanded fallback preferences to `1080,720,576,480,360` so both controller paths can continue 1080 -> 720 -> 480 -> 360 when a client still transcodes.
+- Added regression tests proving continued-transcode waterfall selection, shim-level waterfall interception, 360p inclusion, and lowest-version pass-through without termination.
+- Built local-only real-media canary ladders under the Hardening repo's ignored `.sample-media/downshiftarr-waterfall/` path from the operator-provided Deli Boys and WALL-E samples: protected HDR sources plus SDR 1080/720/480/360 versions with varied audio layouts. These files must never be committed or uploaded to GitHub.
+- Verification passed: `scripts/testing/verify_local.py`, `scripts/testing/verify_local.py --hardening-setup`, boundary/property/fuzz pytest lanes, monkey fallback/client-event campaigns, chaos fake-service/client-control/malformed-metadata campaigns, and bounded Atheris parser/shim native fuzz runs.

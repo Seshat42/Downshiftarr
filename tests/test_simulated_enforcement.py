@@ -173,6 +173,47 @@ def test_every_video_client_profile_downshifts_protected_transcode(profile, monk
     assert client.seek_calls == [2222]
 
 
+@pytest.mark.parametrize(
+    ("current_height", "expected_index"),
+    [
+        (1080, 1),
+        (720, 2),
+        (480, 3),
+    ],
+)
+def test_continued_transcode_waterfalls_to_next_lower_version_by_default(monkeypatch, current_height, expected_index):
+    media_rows = [
+        media("fallback-720-sdr", 720, "SDR", selected=current_height == 720),
+        media("fallback-480-sdr", 480, "SDR", selected=current_height == 480),
+        media("fallback-360-sdr", 360, "SDR", selected=current_height == 360),
+    ]
+    media_rows.insert(0, media("fallback-1080-sdr", 1080, "SDR", selected=current_height == 1080))
+    session = protected_session(machine_identifier="client-plex-web", view_offset=3333)
+    session.media = media_rows
+    client = FakeClient(machine_identifier="client-plex-web")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    assert code == 0
+    assert terminations == []
+    assert client.play_calls == [{"item": session, "offset": 3333, "mediaIndex": expected_index, "partIndex": 0}]
+    assert client.seek_calls == [3333]
+
+
+def test_continued_transcode_at_lowest_version_passes_without_termination(monkeypatch):
+    session = protected_session(machine_identifier="client-plex-web")
+    session.media = [media("fallback-360-sdr", 360, "SDR", selected=True)]
+    client = FakeClient(machine_identifier="client-plex-web")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    assert code == 0
+    assert terminations == []
+    assert client.play_calls == []
+
+
 @pytest.mark.parametrize("decision", ["direct play", "direct stream"])
 @pytest.mark.parametrize("profile", video_capable_profiles(), ids=lambda p: p.name)
 def test_every_video_client_profile_ignores_non_transcode_decisions(profile, decision, monkeypatch):

@@ -162,16 +162,21 @@ def test_shim_rewrites_tonemap_filters_when_swapping_to_sdr(monkeypatch):
 
 
 def test_shim_loads_external_json_config_before_runtime(monkeypatch, tmp_path):
+    token_path = tmp_path / "plex-token"
+    token_path.write_text("file-token\n", encoding="utf-8")
+    token_path.chmod(0o600)
     config_path = tmp_path / "shim-config.json"
     config_path.write_text(
         """{
           "PLEX_URL": "http://10.67.0.2:32400",
+          "PLEX_TOKEN_FILE": "%s",
           "PLEX_HTTP_TIMEOUT_S": 0.25,
           "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
           "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
           "KILL_TRANSCODE_IF_UNSURE": true,
           "REMOVE_BITRATE_LIMITS": true
-        }""",
+        }"""
+        % str(token_path).replace("\\", "\\\\"),
         encoding="utf-8",
     )
     config_path.chmod(0o600)
@@ -180,6 +185,8 @@ def test_shim_loads_external_json_config_before_runtime(monkeypatch, tmp_path):
     shim = load_shim()
 
     assert shim.PLEX_URL == "http://10.67.0.2:32400"
+    assert shim.PLEX_TOKEN_FILE == str(token_path)
+    assert shim.effective_plex_token() == "file-token"
     assert shim.PLEX_HTTP_TIMEOUT_S == 0.25
     assert shim.CACHE_FILE == "/var/lib/downshiftarr/plex-transcoder-cache.json"
     assert shim.LOG_FILE == "/var/log/downshiftarr/plex-transcoder-shim.log"
@@ -244,6 +251,43 @@ def test_shim_rejects_empty_external_transcoder_suffix(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="REAL_TRANSCODER_SUFFIX must not be empty"):
         load_shim()
+
+
+def test_shim_rejects_unsafe_token_file(monkeypatch, tmp_path):
+    token_path = tmp_path / "plex-token"
+    token_path.write_text("file-token\n", encoding="utf-8")
+    token_path.chmod(0o606)
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text(
+        '{"PLEX_TOKEN_FILE": "%s"}' % str(token_path).replace("\\", "\\\\"),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+    monkeypatch.setenv("X_PLEX_TOKEN", "env-token")
+
+    shim = load_shim()
+
+    assert shim.effective_plex_token() == ""
+
+
+def test_shim_rejects_symlink_token_file(monkeypatch, tmp_path):
+    target = tmp_path / "plex-token"
+    target.write_text("file-token\n", encoding="utf-8")
+    target.chmod(0o600)
+    link = tmp_path / "plex-token-link"
+    link.symlink_to(target)
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text(
+        '{"PLEX_TOKEN_FILE": "%s"}' % str(link).replace("\\", "\\\\"),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    shim = load_shim()
+
+    assert shim.effective_plex_token() == ""
 
 
 def test_shim_never_resolves_to_undiverted_transcoder(monkeypatch, tmp_path):

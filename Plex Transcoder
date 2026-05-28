@@ -79,8 +79,15 @@ PLEX_URL: str = "http://127.0.0.1:32400"
 
 # Token used for Plex API calls.
 #
-# Security-friendly default: leave blank and let the shim use the X_PLEX_TOKEN env var, which Plex typically provides when spawning the transcoder (seen in Plex logs).
+# Security-friendly default: leave blank and provide either PLEX_TOKEN_FILE or
+# a Plex-provided token environment variable. Avoid putting tokens in JSON when
+# the deployment can use a root-owned service-readable token file instead.
 PLEX_TOKEN: str = ""
+
+# Optional root-owned token file. This keeps tokens out of process argv,
+# command-line examples, and the immutable shim binary while still allowing
+# deployments where Plex does not pass X_PLEX_TOKEN to the transcoder process.
+PLEX_TOKEN_FILE: str = ""
 
 # Environment variables to check for a token if PLEX_TOKEN is blank.
 PLEX_TOKEN_ENV_VARS: Tuple[str, ...] = (
@@ -226,6 +233,7 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "LOG_FILE": str,
     "LOG_LEVEL": str,
     "PLEX_URL": str,
+    "PLEX_TOKEN_FILE": str,
     "PLEX_HTTP_TIMEOUT_S": float,
     "PLEX_SEARCH_LIMIT_PER_HUB": int,
     "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
@@ -301,6 +309,13 @@ def _open_external_config(config_path: str):
     return open(config_path, "r", encoding="utf-8", opener=opener)
 
 
+def _open_no_follow_text(path: str):
+    def opener(open_path: str, flags: int):
+        return os.open(open_path, flags | getattr(os, "O_NOFOLLOW", 0))
+
+    return open(path, "r", encoding="utf-8", opener=opener)
+
+
 def _validate_external_config_file(config_path: str, handle) -> None:
     st = os.fstat(handle.fileno())
     if not stat.S_ISREG(st.st_mode):
@@ -309,6 +324,38 @@ def _validate_external_config_file(config_path: str, handle) -> None:
         raise RuntimeError("Shim config file must not be writable by group or other")
     if st.st_uid not in {0, os.getuid()}:
         raise RuntimeError("Shim config file must be owned by root or the Plex service user")
+
+
+def _read_plex_token_file(token_path: str) -> str:
+    token_path = (token_path or "").strip()
+    if not token_path:
+        return ""
+    if not os.path.isabs(token_path):
+        raise RuntimeError("Plex token file path must be absolute")
+    _reject_unsafe_parent_dirs(token_path)
+    if not os.path.isfile(token_path):
+        raise RuntimeError("Plex token file is missing")
+    if os.path.islink(token_path):
+        raise RuntimeError("Plex token file must not be a symlink")
+
+    try:
+        with _open_no_follow_text(token_path) as handle:
+            st = os.fstat(handle.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                raise RuntimeError("Plex token file must be a regular file")
+            if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH | stat.S_IROTH):
+                raise RuntimeError("Plex token file permissions are too open")
+            if st.st_uid not in {0, os.getuid()}:
+                raise RuntimeError("Plex token file must be owned by root or the Plex service user")
+            if st.st_size > 8192:
+                raise RuntimeError("Plex token file is unexpectedly large")
+            token = handle.readline().strip()
+    except OSError as exc:
+        raise RuntimeError(f"Plex token file could not be opened safely: {exc}") from exc
+
+    if not token:
+        raise RuntimeError("Plex token file is empty")
+    return token
 
 
 def _load_external_config() -> None:
@@ -377,7 +424,13 @@ def log(level: str, message: str) -> None:
 
 
 def effective_plex_token() -> str:
-    """Return the configured token or a best-effort env-provided token."""
+    """Return the configured token, token-file token, or best-effort env token."""
+    if PLEX_TOKEN_FILE.strip():
+        try:
+            return _read_plex_token_file(PLEX_TOKEN_FILE)
+        except RuntimeError as exc:
+            log("ERROR", f"Plex token file rejected: {exc}")
+            return ""
     if PLEX_TOKEN.strip():
         return PLEX_TOKEN.strip()
     for env_key in PLEX_TOKEN_ENV_VARS:

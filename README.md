@@ -134,6 +134,7 @@ Example:
 {
   "REAL_TRANSCODER_PATH": "/usr/lib/plexmediaserver/Plex Transcoder.downshiftarr-real",
   "PLEX_URL": "http://10.67.0.2:32400",
+  "PLEX_TOKEN_FILE": "/etc/downshiftarr/plex-shim-token",
   "PLEX_HTTP_TIMEOUT_S": 0.35,
   "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
   "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
@@ -147,7 +148,8 @@ Example:
 Key settings youâ€™ll care about first:
 
 - `PLEX_URL` â€“ usually `http://127.0.0.1:32400` inside the Plex container/host.
-- `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens only through Plex's `X_PLEX_TOKEN` environment, `PLEX_TOKEN`, or `PLEX_USER_TOKEN` process environment.
+- `PLEX_TOKEN_FILE` â€“ optional absolute path to a root-owned token file readable by the Plex service user. This is preferred when Plex does not provide `X_PLEX_TOKEN` to spawned transcodes because it keeps the token out of argv, examples, and process environment. The file must be regular, non-symlinked, not group/other writable, not other-readable, and owned by root or the Plex service user.
+- `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens through `PLEX_TOKEN_FILE` or, when Plex supplies one, `X_PLEX_TOKEN`/`PLEX_TOKEN`/`PLEX_USER_TOKEN` process environment.
 - `MAX_ALLOWED_HEIGHT` â€“ default `2000` (treats ~2160p as protected).
 - `MAX_FALLBACK_HEIGHT` â€“ default `1080`.
 - `PREFER_HEIGHTS` â€“ default `(1080, 720, 576, 480, 360)`.

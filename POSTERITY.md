@@ -123,3 +123,8 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 
 - Bragi live canary testing showed the Plex service could execute the shim file but AppArmor denied the shebang-resolved Python interpreter path, producing `/usr/bin/env: 'python3': Permission denied` during real Plex-spawned transcodes.
 - The Linux `Plex Transcoder` shim now uses an absolute `/usr/bin/python3` shebang, with a regression test and README note, so confined Plex deployments can allow the exact interpreter path instead of relying on `PATH` resolution through `/usr/bin/env`.
+
+### 2026-05-28 Bragi Plex Shim Token File Correction
+
+- Bragi live HLS canary testing showed that Plex-spawned transcodes do not reliably provide `X_PLEX_TOKEN` to the shim. Without a token, the shim could execute but could not perform the local Plex metadata lookup needed to swap to a lower compatible version before the real transcoder started.
+- The shim now supports `PLEX_TOKEN_FILE` in external JSON config. It reads one root-owned, regular, non-symlink token file at runtime, rejects group/other writable or other-readable files, keeps token values out of argv/process environment, and falls back to no lookup when the file is unsafe.

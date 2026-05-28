@@ -103,8 +103,9 @@ sudo install -m 0755 "/path/to/Downshiftarr/Plex Transcoder" "/usr/lib/plexmedia
 sudo chmod 0755 "/usr/lib/plexmediaserver/Plex Transcoder.downshiftarr-real"
 ```
 
-5) **Ensure Python 3 exists in the environment where Plex runs.**
-   - If Plex runs in Docker, Python must exist **inside the container**.
+5) **Ensure `/usr/bin/python3` exists in the environment where Plex runs.**
+   - The Linux shim uses an absolute `/usr/bin/python3` shebang so confined Plex services do not depend on `PATH` or `/usr/bin/env` lookup.
+   - If Plex runs in Docker, Python must exist **inside the container** at that path or the shim must be installed with an equivalent reviewed wrapper.
 
 6) **Configure the shim** with an external JSON file and point Plex at it through `DOWNSHIFTARR_SHIM_CONFIG`.
 

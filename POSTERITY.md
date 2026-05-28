@@ -118,3 +118,8 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Added regression tests proving continued-transcode waterfall selection, shim-level waterfall interception, 360p inclusion, and lowest-version pass-through without termination.
 - Built local-only real-media canary ladders under the Hardening repo's ignored `.sample-media/downshiftarr-waterfall/` path from the operator-provided Deli Boys and WALL-E samples: protected HDR sources plus SDR 1080/720/480/360 versions with varied audio layouts. These files must never be committed or uploaded to GitHub.
 - Verification passed: `scripts/testing/verify_local.py`, `scripts/testing/verify_local.py --hardening-setup`, boundary/property/fuzz pytest lanes, monkey fallback/client-event campaigns, chaos fake-service/client-control/malformed-metadata campaigns, and bounded Atheris parser/shim native fuzz runs.
+
+### 2026-05-28 Bragi Plex Shim Runtime Correction
+
+- Bragi live canary testing showed the Plex service could execute the shim file but AppArmor denied the shebang-resolved Python interpreter path, producing `/usr/bin/env: 'python3': Permission denied` during real Plex-spawned transcodes.
+- The Linux `Plex Transcoder` shim now uses an absolute `/usr/bin/python3` shebang, with a regression test and README note, so confined Plex deployments can allow the exact interpreter path instead of relying on `PATH` resolution through `/usr/bin/env`.

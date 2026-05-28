@@ -18,6 +18,14 @@ def load_shim():
     return module
 
 
+def test_shim_uses_absolute_python_interpreter():
+    path = Path(__file__).resolve().parents[1] / "Plex Transcoder"
+
+    first_line = path.read_text(encoding="utf-8").splitlines()[0]
+
+    assert first_line == "#!/usr/bin/python3"
+
+
 def shim_media(file_path, height, dynamic_range="SDR", stream_count=2):
     return {
         "height": height,

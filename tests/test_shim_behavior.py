@@ -148,6 +148,61 @@ def test_shim_waterfalls_unprotected_transcode_to_lower_version(monkeypatch, tmp
     assert captured["args"][1] == "/media/movie-720-sdr.mkv"
 
 
+def test_shim_intercepts_plex_hls_ssegment_output(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    captured = {}
+
+    input_file = "/media/movie-2160-hdr.mkv"
+    fallback_file = "/media/movie-1080-sdr.mkv"
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(
+        shim.sys,
+        "argv",
+        [
+            "Plex Transcoder",
+            "-codec:0",
+            "h264",
+            "-i",
+            input_file,
+            "-filter_complex",
+            "[0:0]scale=w=480:h=270[0]",
+            "-map",
+            "[0]",
+            "-codec:0",
+            "libx264",
+            "-segment_format",
+            "mpegts",
+            "-f",
+            "ssegment",
+            "-segment_list",
+            "http://127.0.0.1:32400/video/:/transcode/session/example/manifest",
+            "media-%05d.ts",
+        ],
+    )
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+    monkeypatch.setattr(shim, "plex_find_item_by_file", lambda path: ("rk-1", {"Media": [shim_media(input_file, 2160, "HDR")]}))
+    monkeypatch.setattr(
+        shim,
+        "plex_fetch_full_metadata",
+        lambda rating_key: {
+            "Media": [
+                shim_media(input_file, 2160, "HDR"),
+                shim_media(fallback_file, 1080, "SDR"),
+            ]
+        },
+    )
+
+    shim.main()
+
+    assert captured["real"] == str(real)
+    assert captured["args"][captured["args"].index("-i") + 1] == fallback_file
+
+
 def test_shim_passes_through_when_continued_waterfall_has_no_lower_version(monkeypatch, tmp_path):
     shim = load_shim()
     real = tmp_path / "Plex Transcoder.downshiftarr-real"

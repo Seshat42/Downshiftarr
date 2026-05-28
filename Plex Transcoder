@@ -125,8 +125,9 @@ SECTION_SCAN_MAX_ITEMS: int = 1000
 # Only intercept streaming transcodes (DASH/HLS). Recommended.
 ONLY_INTERCEPT_STREAMING_TRANSCODES: bool = True
 
-# Formats Plex uses for segmented streaming. (Commonly "dash"; "hls" in some cases.)
-STREAMING_OUTPUT_FORMATS: Tuple[str, ...] = ("dash", "hls")
+# Formats Plex uses for segmented streaming. Plex's universal HLS path invokes
+# ffmpeg's segment muxers even though the client-facing protocol is HLS.
+STREAMING_OUTPUT_FORMATS: Tuple[str, ...] = ("dash", "hls", "ssegment", "segment")
 
 # If video is being copied (direct stream/remux or audio-only transcode), do not interfere.
 SKIP_WHEN_VIDEO_CODEC_COPY: bool = True
@@ -654,7 +655,7 @@ def is_streaming_transcode(args: Sequence[str]) -> bool:
     """
     # Quick keyword checks first.
     joined = " ".join(args).lower()
-    if "-dash_segment_type" in joined or "-seg_duration" in joined or "seglist" in joined:
+    if any(k in joined for k in ("-dash_segment_type", "-seg_duration", "-segment_list", "-segment_time", "seglist")):
         return True
 
     # Check explicit output format.

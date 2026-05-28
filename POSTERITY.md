@@ -50,6 +50,12 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Real-server tests must not target Bragi, TooB, relay URLs, hosted Plex, external Plex, or any non-loopback server.
 - Generated test media belongs under ignored `artifacts/plex-test-media/`.
 - Local test secrets belong only in ignored `Downshiftarr.test.env`.
+- The local Tautulli sidecar is isolated to `downshiftarr-tautulli`, loopback port `18181` or first free `18182-18190`, and ignored `artifacts/local-tautulli/`.
+- User clarified that no existing installations or other projects may be impacted by this test rig.
+- User approved destructive actions on Loki as a local test server, limited to Downshiftarr generated media, test sessions, and dedicated test library assets.
+- On 2026-05-28 the sidecar API reported `status=success`, `server_status.connected=true`, and `get_activity` returned an empty successful activity payload.
+- Browser smoke reached the Tautulli sidecar via `http://host.docker.internal:18181` and saw `Tautulli - Home | Loki`; it also reached Loki's `/identity` endpoint through `host.docker.internal` without placing a Plex token in the URL.
+- Chrome local smoke reached `http://127.0.0.1:18181` and saw `Tautulli - Home | Loki`; Chrome blocked direct Plex `/identity` navigation with `ERR_BLOCKED_BY_CLIENT`, so authenticated Plex Web playback proof remains a follow-up.
 
 ### Q&A And User Instructions
 
@@ -70,3 +76,6 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 
 - Q: How are smart TV and other client behaviors covered without every device present?
 - A: The simulated harness models Plex Web, Roku, Apple TV, Android TV/Fire TV, Chromecast, Samsung Tizen, LG webOS, consoles, mobile, Plex HTPC, relay, and unknown clients. Real devices can be added as follow-up proof, but deterministic simulated coverage comes first.
+
+- Q: May the local Tautulli test setup use existing installs or other project containers?
+- A: No. The Tautulli sidecar must use Downshiftarr-only Docker names, labels, loopback ports, ignored config, and label-guarded cleanup.

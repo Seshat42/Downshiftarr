@@ -53,4 +53,6 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - Treat generated media under `artifacts/plex-test-media/` as disposable local output; never commit generated videos, manifests from private runs, screenshots, logs, or tokens.
 - Real Plex integration tests may target only the local Windows Plex server named Loki through the guarded loopback runner.
 - Do not point real-server tests at Bragi, TooB, remote Plex hosts, relay URLs, or any non-loopback Plex URL.
+- The local Tautulli sidecar must be isolated to `downshiftarr-tautulli`, Downshiftarr labels, loopback ports, and ignored `artifacts/local-tautulli/` config.
+- Never stop, remove, reconfigure, or rely on containers, ports, libraries, or installs owned by other projects.
 - Destructive Loki tests require explicit local opt-in through `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1`.

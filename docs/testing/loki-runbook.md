@@ -11,6 +11,8 @@ Loki is the local Windows Plex server used for opt-in real integration tests. Th
 - Never run this lane against Bragi, TooB, Plex relay, hosted Plex, or production servers.
 - Use generated media only.
 - Use a dedicated library such as `Downshiftarr Test Rig`.
+- Use only the isolated `downshiftarr-tautulli` sidecar for local Tautulli proof.
+- Never touch existing Tautulli installs or non-Downshiftarr containers.
 - Set `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1` only when you intend to mutate the Loki test library or terminate Downshiftarr test sessions.
 
 ## Configure
@@ -29,7 +31,9 @@ DOWNSHIFTARR_LOKI_PLEX_URL=http://127.0.0.1:32400
 DOWNSHIFTARR_LOKI_EXPECTED_MACHINE_ID=165cc0187d76937eb104da8d46437bf5443ec503
 DOWNSHIFTARR_LOKI_TEST_LIBRARY_NAME=Downshiftarr Test Rig
 DOWNSHIFTARR_TEST_MEDIA_DIR=artifacts/plex-test-media
+DOWNSHIFTARR_TAUTULLI_URL=http://127.0.0.1:18181
 DOWNSHIFTARR_LOKI_PLEX_TOKEN=YOUR_PLEX_TOKEN_HERE
+DOWNSHIFTARR_TAUTULLI_APIKEY=YOUR_LOCAL_TAUTULLI_API_KEY_HERE
 DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=0
 ```
 
@@ -48,6 +52,16 @@ Expected result:
 - Loki identity is verified.
 - Media appears under `artifacts/plex-test-media/`.
 - JSON output reports `status` as `guard-and-media-only`.
+
+## Tautulli Sidecar
+
+Start or refresh the isolated local Tautulli sidecar:
+
+```powershell
+.\scripts\testing\Invoke-LokiIntegration.ps1 -SetupTautulli
+```
+
+This creates only `downshiftarr-tautulli`, binds it to loopback, writes config under `artifacts/local-tautulli/`, disables the sidecar's remote update checks, and records the generated API key in ignored `Downshiftarr.test.env`.
 
 ## Library Refresh
 

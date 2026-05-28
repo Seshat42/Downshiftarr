@@ -1,4 +1,5 @@
 param(
+    [switch]$SetupTautulli,
     [switch]$Destructive,
     [switch]$CreateLibrary,
     [switch]$Browser,
@@ -9,6 +10,13 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
+
+if ($SetupTautulli) {
+    & $Python -m scripts.testing.tautulli_manager up --env-file $EnvFile
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
 
 $argsList = @("-m", "scripts.testing.run_loki_matrix", "--env-file", $EnvFile)
 if ($Destructive) {

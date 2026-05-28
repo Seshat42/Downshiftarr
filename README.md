@@ -181,11 +181,13 @@ Testing docs:
 - `docs/testing/test-environment.md` describes the layered rig and marker policy.
 - `docs/testing/client-matrix.md` lists simulated Plex client profiles and scenarios.
 - `docs/testing/loki-runbook.md` covers the opt-in Windows Loki Plex integration lane.
+- `docs/testing/tautulli-sidecar.md` covers the isolated local Tautulli Docker sidecar.
 
 Real Plex tests are local-only and guarded. Copy `Downshiftarr.test.env.example` to `Downshiftarr.test.env`, fill in local Loki values, and run the Windows wrapper only when you intentionally want real-server proof:
 
 ```powershell
 .\scripts\testing\Invoke-LokiIntegration.ps1
+.\scripts\testing\Invoke-LokiIntegration.ps1 -SetupTautulli
 .\scripts\testing\Invoke-LokiIntegration.ps1 -Destructive
 ```
 

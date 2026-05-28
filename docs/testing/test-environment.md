@@ -22,6 +22,7 @@ Downshiftarr uses a layered test rig so most behavior is proven deterministicall
 
 4. Real Loki Plex integration
    - `scripts/testing/loki_guard.py` validates the Windows loopback Plex identity before any real-server path.
+   - `scripts/testing/tautulli_manager.py` starts only the isolated `downshiftarr-tautulli` Docker sidecar and verifies Docker-to-Loki reachability before setup.
    - `scripts/testing/run_loki_matrix.py` generates media and optionally refreshes a dedicated Loki Plex test library.
    - `scripts/testing/Invoke-LokiIntegration.ps1` is the Windows-side runner because WSL cannot currently reach Windows Plex at `127.0.0.1:32400`.
 
@@ -74,4 +75,5 @@ Ignored local files and outputs:
 - Do not run destructive tests unless `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1` is set in a local ignored env file.
 - Do not use a non-loopback Plex URL for Loki tests.
 - Do not point the real-server lane at Bragi, TooB, relay, hosted, or production Plex instances.
+- Do not stop, remove, reconfigure, or inspect secrets from containers or installs not explicitly labeled and named for Downshiftarr.
 - Generated media is disposable and should live in a dedicated Plex library such as `Downshiftarr Test Rig`.

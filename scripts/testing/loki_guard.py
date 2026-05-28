@@ -77,20 +77,6 @@ def assert_loki_identity(
     return identity
 
 
-def load_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path or not os.path.exists(path):
-        return values
-    with open(path, "r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.environ.get("DOWNSHIFTARR_LOKI_PLEX_URL", "http://127.0.0.1:32400"))

@@ -7,6 +7,7 @@ This baseline is concise by design. It defines the minimum accepted security pos
 ## Secrets and Tokens
 
 - Store `PLEX_TOKEN`, `PLEX_USER_TOKEN`, and `TAUTULLI_APIKEY` only in `Downshiftarr.env`, the service/container environment, or Tautulli's injected script environment.
+- Store local test sidecar values only in ignored `Downshiftarr.test.env` or `artifacts/local-tautulli/`.
 - Never commit real tokens. Example values must be obvious placeholders.
 - Protect `Downshiftarr.env` with owner-only permissions, for example `chmod 600 /opt/tautulli/scripts/Downshiftarr.env`.
 - Rotate Plex and Tautulli credentials after any suspected log, artifact, screenshot, repo, shell history, or proxy exposure.
@@ -79,6 +80,8 @@ Baseline controls:
 - Token handling: Loki tests use `X-Plex-Token` headers and local ignored `Downshiftarr.test.env` values.
 - Destructive opt-in: library refresh, generated-media import, and enforcement scenarios require `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1`.
 - Data isolation: generated files live under ignored `artifacts/plex-test-media/` and should be used with a dedicated Plex library such as `Downshiftarr Test Rig`.
+- Tautulli isolation: local proof uses only the labeled `downshiftarr-tautulli` sidecar on loopback and must not touch other installs or projects.
+- Remote update checks in the sidecar are disabled during setup.
 - Browser smoke is optional and must not save authenticated screenshots or traces unless reviewed for secrets.
 
 ## Scan Artifact Layout

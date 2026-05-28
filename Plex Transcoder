@@ -112,6 +112,13 @@ PLEX_SEARCH_ENDPOINTS: Tuple[str, ...] = (
 # If your libraries are huge and you have generic file names, raising this can help.
 PLEX_SEARCH_LIMIT_PER_HUB: int = 25
 
+# Some Plex libraries do not return file-name searches for versioned media even
+# though `/library/sections/<key>/all` contains the exact Part file. Keep this
+# fallback bounded and section-location scoped so the shim can still find
+# version siblings without scanning unrelated libraries.
+ENABLE_SECTION_SCAN_FALLBACK: bool = True
+SECTION_SCAN_MAX_ITEMS: int = 1000
+
 
 # --- 4) Intercept scope (avoid breaking non-streaming transcoder jobs) ----------------
 
@@ -236,6 +243,8 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "PLEX_TOKEN_FILE": str,
     "PLEX_HTTP_TIMEOUT_S": float,
     "PLEX_SEARCH_LIMIT_PER_HUB": int,
+    "ENABLE_SECTION_SCAN_FALLBACK": bool,
+    "SECTION_SCAN_MAX_ITEMS": int,
     "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
     "SKIP_WHEN_VIDEO_CODEC_COPY": bool,
     "MAX_ALLOWED_HEIGHT": int,
@@ -804,6 +813,86 @@ def _iter_hub_items(search_json: dict) -> Iterable[dict]:
             yield item
 
 
+def _as_list(value) -> List[dict]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _iter_metadata_items(container_json: dict) -> Iterable[dict]:
+    mc = (container_json or {}).get("MediaContainer", {})
+    for item in _as_list(mc.get("Metadata")):
+        yield item
+
+
+def _item_has_file(item: dict, file_path: str) -> bool:
+    medias = _as_list(item.get("Media"))
+    for media in medias:
+        for part in _as_list(media.get("Part")):
+            if part.get("file") == file_path:
+                return True
+    return False
+
+
+def _section_locations(section: dict) -> List[str]:
+    locations = _as_list(section.get("Location"))
+    paths = []
+    for location in locations:
+        path = (location.get("path") or "").rstrip("/")
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _section_matches_file_path(section: dict, file_path: str) -> bool:
+    normalized = os.path.abspath(file_path)
+    for location in _section_locations(section):
+        root = os.path.abspath(location)
+        if normalized == root or normalized.startswith(root.rstrip("/") + os.sep):
+            return True
+    return False
+
+
+def _section_all_params(section: dict) -> Dict[str, str]:
+    params: Dict[str, str] = {}
+    if section.get("type") == "show":
+        params["type"] = "4"
+    return params
+
+
+def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, dict]]:
+    if not ENABLE_SECTION_SCAN_FALLBACK:
+        return None
+    sections = plex_get_json("/library/sections", params={})
+    if not sections:
+        return None
+    candidates = [
+        section
+        for section in _as_list((sections.get("MediaContainer") or {}).get("Directory"))
+        if _section_matches_file_path(section, file_path)
+    ]
+    for section in candidates:
+        key = section.get("key")
+        if not key:
+            continue
+        data = plex_get_json(f"/library/sections/{key}/all", params=_section_all_params(section))
+        if not data:
+            continue
+        checked = 0
+        for item in _iter_metadata_items(data):
+            checked += 1
+            if checked > SECTION_SCAN_MAX_ITEMS:
+                break
+            rk = item.get("ratingKey")
+            if rk and _item_has_file(item, file_path):
+                return str(rk), item
+    return None
+
+
 def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
     """Find (rating_key, item_dict) for a given absolute media file path."""
     if not file_path:
@@ -847,7 +936,7 @@ def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
                         if p.get("file") == file_path:
                             return str(rk), item
 
-    return None
+    return plex_find_item_by_file_via_sections(file_path)
 
 
 def plex_fetch_full_metadata(rating_key: str) -> Optional[dict]:

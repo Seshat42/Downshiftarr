@@ -290,6 +290,73 @@ def test_shim_rejects_symlink_token_file(monkeypatch, tmp_path):
     assert shim.effective_plex_token() == ""
 
 
+def test_shim_finds_file_with_section_scan_fallback(monkeypatch):
+    shim = load_shim()
+    calls = []
+    target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - Downshiftarr Canary - 2160p.mkv"
+
+    def fake_get(path, params):
+        calls.append((path, dict(params)))
+        if path in {"/hubs/search", "/hubs/search/", "/search", "/search/"}:
+            return {"MediaContainer": {"Hub": []}}
+        if path == "/library/sections":
+            return {
+                "MediaContainer": {
+                    "Directory": [
+                        {"key": "1", "type": "movie", "Location": [{"path": "/mnt/media/Movies"}]},
+                        {"key": "2", "type": "show", "Location": [{"path": "/mnt/media/Series"}]},
+                    ]
+                }
+            }
+        if path == "/library/sections/1/all":
+            return {
+                "MediaContainer": {
+                    "Metadata": [
+                        {
+                            "ratingKey": "24",
+                            "Media": [
+                                {"Part": [{"file": target}]},
+                            ],
+                        }
+                    ]
+                }
+            }
+        raise AssertionError(f"unexpected Plex path {path}")
+
+    monkeypatch.setattr(shim, "plex_get_json", fake_get)
+
+    found = shim.plex_find_item_by_file(target)
+
+    assert found is not None
+    assert found[0] == "24"
+    assert ("/library/sections/1/all", {}) in calls
+    assert not any(path == "/library/sections/2/all" for path, _params in calls)
+
+
+def test_shim_section_scan_uses_episode_type_for_show_libraries(monkeypatch):
+    shim = load_shim()
+    calls = []
+    target = "/mnt/media/Series/Deli Boys (2025)/Season 02/Deli Boys - S02E01 - Downshiftarr Canary - 2160p.mkv"
+
+    def fake_get(path, params):
+        calls.append((path, dict(params)))
+        if path in {"/hubs/search", "/hubs/search/", "/search", "/search/"}:
+            return {"MediaContainer": {"Hub": []}}
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": [{"key": "2", "type": "show", "Location": [{"path": "/mnt/media/Series"}]}]}}
+        if path == "/library/sections/2/all":
+            return {"MediaContainer": {"Metadata": [{"ratingKey": "44", "Media": [{"Part": [{"file": target}]}]}]}}
+        raise AssertionError(f"unexpected Plex path {path}")
+
+    monkeypatch.setattr(shim, "plex_get_json", fake_get)
+
+    found = shim.plex_find_item_by_file(target)
+
+    assert found is not None
+    assert found[0] == "44"
+    assert ("/library/sections/2/all", {"type": "4"}) in calls
+
+
 def test_shim_never_resolves_to_undiverted_transcoder(monkeypatch, tmp_path):
     shim = load_shim()
     shim_path = tmp_path / "Plex Transcoder"

@@ -3,9 +3,9 @@
 Bootstrap date: 2026-05-28  
 Repository: `Seshat42/Downshiftarr`  
 Default branch: `main`  
-Inventory scope: branch intake only; no merges, rebases, cherry-picks, deletions, or branch consolidation are authorized in this phase.
+Inventory scope: historical branch intake plus final single-main consolidation cleanup record. Intake did not authorize merges; the later 2026-05-28 consolidation phase was explicitly authorized by the user.
 
-## Summary
+## Intake Summary
 
 - Local branches: 12
 - GitHub branches: 12
@@ -64,7 +64,9 @@ Open issues:
 
 - #3: `possibility of docker container?`
 
-## Next-Phase Consolidation Notes
+## Consolidation Plan Notes (Superseded)
+
+These notes governed the handoff from bootstrap into the now-completed consolidation record below.
 
 - Preserve the no-merge policy until each open PR is rebased or otherwise reviewed against current `main`.
 - Review PR #10 first because it changes token handling and has the highest security impact.
@@ -97,3 +99,12 @@ Merged content:
 | `jules-311580304402418888-ae638ed7` | #14 | `fc0045a` | Ported `env_bool` tests to `tests/test_helpers.py`. |
 
 Already-integrated branches `optimize-session-search-early-exit-10951549358986469248` and `test-normalize-decision-8116256256308464572` remain cleanup-only branches. They should be deleted with the other non-`main` remote refs after `origin/main` contains the consolidation.
+
+Post-push cleanup:
+
+- `main` was pushed to GitHub at `6c70c39`.
+- GitHub automatically marked PRs #5, #7, #8, #9, #10, #11, #12, and #14 as merged at 2026-05-28 05:37:55 UTC because their head commits are ancestors of `main`.
+- Open PR queue after push: empty.
+- Remote branches were ancestry-verified against `origin/main` before deletion.
+- Deleted remote refs: `add-tests-media-height-4449859519764339005`, `dev`, `fix-plex-token-exposure-14819038041623419576`, `fix-unused-annotations-import-14675292598164734863`, `jules-10351953059055018286-c854910a`, `jules-16002624577278156886-445e8c56`, `jules-311580304402418888-ae638ed7`, `jules-8496729870724669652-24d2ecea`, `optimize-session-search-early-exit-10951549358986469248`, `test-normalize-decision-8116256256308464572`, and `testing-improvement-parse-resolution-hint-11289850538183556530`.
+- Final GitHub branch list after cleanup: `main` only.

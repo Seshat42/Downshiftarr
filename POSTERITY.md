@@ -71,3 +71,5 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: Should remote non-`main` branches remain after consolidation?
 - A: No. The user authorized deletion of every non-`main` remote branch after the push and PR cleanup. Tags are preserved.
 - Case-safety rule remains active: do not reintroduce root `test_downshiftarr.py` or `test_Downshiftarr.py`; all branch test coverage now lives under lowercase `tests/`.
+- Remote cleanup outcome: `main` was pushed to GitHub at `6c70c39`; GitHub automatically marked PRs #5, #7, #8, #9, #10, #11, #12, and #14 as merged at 2026-05-28 05:37:55 UTC.
+- Remote branch cleanup outcome: after ancestry verification against `origin/main`, every non-`main` remote branch was deleted. GitHub branch API returned only `main`, local remote tracking returned only `origin/HEAD -> origin/main` and `origin/main`, and the open PR list was empty.

@@ -108,6 +108,7 @@ Dependencies
 
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -559,6 +560,41 @@ def media_dynamic_range(media_obj) -> str:
     return "UNKNOWN"
 
 
+_EDITION_TOKEN_RE = re.compile(r"\{edition-([^{}]+)\}", re.IGNORECASE)
+
+
+def normalize_edition_key(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip().casefold()
+
+
+def edition_key_from_path(path: Optional[str]) -> str:
+    if not path:
+        return ""
+    match = _EDITION_TOKEN_RE.search(str(path))
+    if not match:
+        return ""
+    return normalize_edition_key(match.group(1))
+
+
+def media_edition_key(media_obj) -> str:
+    """Return a conservative Plex Edition key for a media version."""
+    for attr in ("editionTitle", "edition", "editionName", "editionDisplayTitle"):
+        value = getattr(media_obj, attr, None)
+        key = normalize_edition_key(value)
+        if key:
+            return key
+    try:
+        for part in getattr(media_obj, "parts", []) or []:
+            key = edition_key_from_path(getattr(part, "file", None))
+            if key:
+                return key
+    except Exception:
+        pass
+    return ""
+
+
 def classify_dynamic_range(dr: str) -> str:
     s = (dr or "").upper().strip()
     if not s or s in ("UNKNOWN", "NONE"):
@@ -667,6 +703,12 @@ def pick_best_fallback_media_index(
     media_list = getattr(item, "media", []) or []
     if not media_list:
         return None
+    current_edition = ""
+    for m in media_list:
+        mid = str(getattr(m, "id", "") or "")
+        if (current_media_id and mid == current_media_id) or getattr(m, "selected", False):
+            current_edition = media_edition_key(m)
+            break
 
     # Two-pass selection:
     #   pass 1: SDR-only (preferred)
@@ -688,6 +730,8 @@ def pick_best_fallback_media_index(
         for idx, m in enumerate(media_list):
             mid = str(getattr(m, "id", "") or "")
             if current_media_id and mid == current_media_id:
+                continue
+            if media_edition_key(m) != current_edition:
                 continue
 
             h = media_height(m)

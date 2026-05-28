@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -40,6 +41,13 @@ def shim_media(file_path, height, dynamic_range="SDR", stream_count=2):
     }
 
 
+def shim_media_with_edition(file_path, height, dynamic_range="SDR", edition=""):
+    row = shim_media(file_path, height, dynamic_range)
+    if edition:
+        row["editionTitle"] = edition
+    return row
+
+
 def test_shim_fallback_selection_prefers_sdr_1080(monkeypatch):
     shim = load_shim()
     monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
@@ -61,6 +69,45 @@ def test_shim_fallback_selection_prefers_sdr_1080(monkeypatch):
 
     assert fallback.file_path == "/media/movie-1080-sdr.mkv"
     assert fallback.dyn_range_class == "SDR"
+
+
+def test_shim_fallback_selection_does_not_cross_plex_editions(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(shim, "MAX_FALLBACK_HEIGHT", 1080)
+    monkeypatch.setattr(shim, "FALLBACK_SDR_ONLY", True)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+
+    current = shim.build_media_info(shim_media_with_edition("/media/movie {edition-Theatrical} - 2160p HDR.mkv", 2160, "HDR", "Theatrical"))
+    item = {
+        "Media": [
+            current.media,
+            shim_media_with_edition("/media/movie {edition-Director's Cut} - 1080p SDR.mkv", 1080, "SDR", "Director's Cut"),
+        ]
+    }
+
+    assert shim.pick_best_fallback(item, current, required_max_stream=None) is None
+
+
+def test_shim_fallback_selection_allows_same_plex_edition(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(shim, "MAX_FALLBACK_HEIGHT", 1080)
+    monkeypatch.setattr(shim, "FALLBACK_SDR_ONLY", True)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+
+    current = shim.build_media_info(shim_media_with_edition("/media/movie {edition-Theatrical} - 2160p HDR.mkv", 2160, "HDR", "Theatrical"))
+    item = {
+        "Media": [
+            current.media,
+            shim_media_with_edition("/media/movie {edition-Theatrical} - 1080p SDR.mkv", 1080, "SDR", "Theatrical"),
+            shim_media_with_edition("/media/movie {edition-Director's Cut} - 720p SDR.mkv", 720, "SDR", "Director's Cut"),
+        ]
+    }
+
+    fallback = shim.pick_best_fallback(item, current, required_max_stream=None)
+
+    assert fallback.file_path == "/media/movie {edition-Theatrical} - 1080p SDR.mkv"
 
 
 def test_shim_fallback_selection_infers_sdr_from_filename_when_plex_metadata_is_thin(monkeypatch):
@@ -447,6 +494,43 @@ def test_shim_section_scan_uses_episode_type_for_show_libraries(monkeypatch):
     assert found is not None
     assert found[0] == "44"
     assert ("/library/sections/2/all", {"type": "4"}) in calls
+
+
+def test_shim_uses_precomputed_version_index_before_plex_search(monkeypatch, tmp_path):
+    target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
+    index_path = tmp_path / "plex-version-index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": [
+                    {
+                        "ratingKey": "9001",
+                        "Media": [
+                            {"height": 2160, "Part": [{"file": target}]},
+                            {"height": 1080, "Part": [{"file": "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"}]},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path.chmod(0o660)
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text(
+        json.dumps({"VERSION_INDEX_FILE": str(index_path)}),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+    shim = load_shim()
+    monkeypatch.setattr(shim, "plex_get_json", lambda path, params: (_ for _ in ()).throw(AssertionError(path)))
+
+    found = shim.plex_find_item_by_file(target)
+
+    assert found is not None
+    assert found[0] == "9001"
 
 
 def test_shim_never_resolves_to_undiverted_transcoder(monkeypatch, tmp_path):

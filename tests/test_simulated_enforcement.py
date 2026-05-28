@@ -106,6 +106,36 @@ def test_fallback_selection_prefers_1080_sdr_for_4k_hdr(monkeypatch):
     assert pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR") == 2
 
 
+def test_fallback_selection_does_not_cross_plex_editions(monkeypatch):
+    monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(Downshiftarr, "PREFER_HEIGHTS", (1080, 720, 480))
+    monkeypatch.setattr(Downshiftarr, "FALLBACK_SDR_ONLY", True)
+
+    current = media("current-4k-hdr", 2160, "HDR", selected=True)
+    current.editionTitle = "Theatrical"
+    director_cut = media("director-cut-1080-sdr", 1080, "SDR")
+    director_cut.editionTitle = "Director's Cut"
+    item = attr(media=[current, director_cut])
+
+    assert pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR") is None
+
+
+def test_fallback_selection_allows_same_plex_edition(monkeypatch):
+    monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(Downshiftarr, "PREFER_HEIGHTS", (1080, 720, 480))
+    monkeypatch.setattr(Downshiftarr, "FALLBACK_SDR_ONLY", True)
+
+    current = media("current-4k-hdr", 2160, "HDR", selected=True)
+    current.editionTitle = "Theatrical"
+    theatrical = media("theatrical-1080-sdr", 1080, "SDR")
+    theatrical.editionTitle = "Theatrical"
+    director_cut = media("director-cut-720-sdr", 720, "SDR")
+    director_cut.editionTitle = "Director's Cut"
+    item = attr(media=[current, director_cut, theatrical])
+
+    assert pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR") == 2
+
+
 def test_plex_terminate_session_uses_headers_not_token_query(monkeypatch):
     captured = {}
 

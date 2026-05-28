@@ -119,6 +119,10 @@ PLEX_SEARCH_LIMIT_PER_HUB: int = 25
 ENABLE_SECTION_SCAN_FALLBACK: bool = True
 SECTION_SCAN_MAX_ITEMS: int = 1000
 
+# Optional hot-path version index. When present, this avoids synchronous Plex
+# search/section scans during the first transcode segment.
+VERSION_INDEX_FILE: str = "/var/lib/downshiftarr/cache/plex-version-index.json"
+
 
 # --- 4) Intercept scope (avoid breaking non-streaming transcoder jobs) ----------------
 
@@ -246,6 +250,7 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "PLEX_SEARCH_LIMIT_PER_HUB": int,
     "ENABLE_SECTION_SCAN_FALLBACK": bool,
     "SECTION_SCAN_MAX_ITEMS": int,
+    "VERSION_INDEX_FILE": str,
     "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
     "SKIP_WHEN_VIDEO_CODEC_COPY": bool,
     "MAX_ALLOWED_HEIGHT": int,
@@ -564,6 +569,38 @@ def dynamic_range_from_file_name(file_path: str) -> str:
     if "SDR" in tokens:
         return "SDR"
     return "UNKNOWN"
+
+
+_EDITION_TOKEN_RE = re.compile(r"\{edition-([^{}]+)\}", re.IGNORECASE)
+
+
+def normalize_edition_key(value: object) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip().casefold()
+
+
+def edition_key_from_file_name(file_path: str) -> str:
+    match = _EDITION_TOKEN_RE.search(file_path or "")
+    if not match:
+        return ""
+    return normalize_edition_key(match.group(1))
+
+
+def media_edition_key(media: dict) -> str:
+    """Return a conservative Plex Edition key for a media version."""
+    for key in ("editionTitle", "edition", "editionName", "editionDisplayTitle"):
+        normalized = normalize_edition_key(media.get(key))
+        if normalized:
+            return normalized
+    parts = media.get("Part") or []
+    if isinstance(parts, dict):
+        parts = [parts]
+    for part in parts:
+        normalized = edition_key_from_file_name(str(part.get("file") or ""))
+        if normalized:
+            return normalized
+    return ""
 
 
 def media_dynamic_range(media: dict) -> str:
@@ -911,10 +948,37 @@ def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, d
     return None
 
 
+def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[str, dict]]:
+    index_path = (VERSION_INDEX_FILE or "").strip()
+    if not index_path or not os.path.isfile(index_path):
+        return None
+    try:
+        with open(index_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        log("DEBUG", f"Ignoring unreadable version index: {exc}")
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return None
+    items = data.get("items") or []
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rating_key = item.get("ratingKey") or item.get("rating_key")
+        if rating_key and _item_has_file(item, file_path):
+            return str(rating_key), item
+    return None
+
+
 def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
     """Find (rating_key, item_dict) for a given absolute media file path."""
     if not file_path:
         return None
+    indexed = plex_find_item_by_file_via_version_index(file_path)
+    if indexed:
+        return indexed
 
     # The Plex search API expects a query string; using the basename keeps it fast.
     # We also try a "title-ish" cleaned basename as a second attempt.
@@ -982,6 +1046,7 @@ class MediaInfo:
     dyn_range: str
     dyn_range_class: str
     max_stream_index: Optional[int]
+    edition_key: str
 
 
 def build_media_info(media: dict) -> Optional[MediaInfo]:
@@ -1004,7 +1069,15 @@ def build_media_info(media: dict) -> Optional[MediaInfo]:
             dr = inferred
             drc = classify_dynamic_range(dr)
     msi = part_max_stream_index(media)
-    return MediaInfo(media=media, file_path=str(fp), height=h, dyn_range=dr, dyn_range_class=drc, max_stream_index=msi)
+    return MediaInfo(
+        media=media,
+        file_path=str(fp),
+        height=h,
+        dyn_range=dr,
+        dyn_range_class=drc,
+        max_stream_index=msi,
+        edition_key=media_edition_key(media),
+    )
 
 
 def find_current_media(full_item: dict, input_file: str) -> Optional[MediaInfo]:
@@ -1077,6 +1150,8 @@ def pick_best_fallback(
 
             # Exclude the currently requested file.
             if mi.file_path == current.file_path:
+                continue
+            if mi.edition_key != current.edition_key:
                 continue
 
             # Must have a known height.

@@ -127,4 +127,11 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 ### 2026-05-28 Bragi Plex Shim Token File Correction
 
 - Bragi live HLS canary testing showed that Plex-spawned transcodes do not reliably provide `X_PLEX_TOKEN` to the shim. Without a token, the shim could execute but could not perform the local Plex metadata lookup needed to swap to a lower compatible version before the real transcoder started.
+
+## 2026-05-28 Plex Versions And Speed Index Follow-Up
+
+- Q: Should Downshiftarr waterfall across Plex Editions? A: No. The operator provided Plex's multi-version guidance and selected Versions Only. Downshiftarr must downshift only across Plex Versions for the same release; theatrical, director's cut, 3D, and special-edition surfaces are not interchangeable fallback targets.
+- Implemented conservative edition guards in both `Downshiftarr.py` and the Plex Transcoder shim. They compare Plex edition fields and `{edition-...}` file-name tokens, and pass through when the current media and candidate fallback do not share the same edition key.
+- Added optional shim support for `/var/lib/downshiftarr/cache/plex-version-index.json`. The shim checks that precomputed index before live Plex search/section scans so Bragi can keep first-segment decisions fast while still falling back to bounded Plex lookups when the index is absent or stale.
+- Added regression coverage for edition mismatch refusal, same-edition fallback, and version-index lookup before Plex API search.
 - The shim now supports `PLEX_TOKEN_FILE` in external JSON config. It reads one root-owned, regular, non-symlink token file at runtime, rejects group/other writable or other-readable files, keeps token values out of argv/process environment, and falls back to no lookup when the file is unsafe.

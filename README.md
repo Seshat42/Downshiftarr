@@ -49,6 +49,8 @@ If itâ€™s protected **and** video is being transcoded:
 - If the client keeps transcoding after the first switch, keep stepping down through lower available versions by default, down to 360p when present.
 - If downshift fails â†’ terminate the session (Tautulli first; Plex fallback).
 
+Downshiftarr only downshifts across Plex **Versions** of the same release. It must not cross Plex Editions such as theatrical, director's cut, 3D, or special-edition releases. If edition metadata or `{edition-...}` file naming indicates that two files are different editions, Downshiftarr treats them as separate release surfaces and passes through rather than swapping to the wrong cut.
+
 The optional **Plex Transcoder shim** runs *before* Downshiftarr.py ever gets an event:
 
 - Plex spawns `Plex Transcoder` â†’ the shim executes.
@@ -150,6 +152,7 @@ Key settings youâ€™ll care about first:
 - `PLEX_URL` â€“ usually `http://127.0.0.1:32400` inside the Plex container/host.
 - `PLEX_TOKEN_FILE` â€“ optional absolute path to a root-owned token file readable by the Plex service user. This is preferred when Plex does not provide `X_PLEX_TOKEN` to spawned transcodes because it keeps the token out of argv, examples, and process environment. The file must be regular, non-symlinked, not group/other writable, not other-readable, and owned by root or the Plex service user.
 - `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens through `PLEX_TOKEN_FILE` or, when Plex supplies one, `X_PLEX_TOKEN`/`PLEX_TOKEN`/`PLEX_USER_TOKEN` process environment.
+- `VERSION_INDEX_FILE` â€“ optional precomputed Plex version index. When present, the shim checks it before live Plex search/section scans so first-segment decisions stay fast.
 - `ENABLE_SECTION_SCAN_FALLBACK` â€“ default `True`; if Plex search returns no file-name results, the shim tries the matching library section by location and exact `Part` path. This keeps version lookup working for libraries whose search index hides version filenames.
 - `MAX_ALLOWED_HEIGHT` â€“ default `2000` (treats ~2160p as protected).
 - `MAX_FALLBACK_HEIGHT` â€“ default `1080`.

@@ -1,5 +1,47 @@
 import Downshiftarr
-from Downshiftarr import is_high_quality
+import pytest
+from Downshiftarr import classify_dynamic_range, is_high_quality
+
+
+@pytest.mark.parametrize(
+    ("dynamic_range", "expected"),
+    [
+        ("", "UNKNOWN"),
+        (None, "UNKNOWN"),
+        ("   ", "UNKNOWN"),
+        ("UNKNOWN", "UNKNOWN"),
+        ("unknown", "UNKNOWN"),
+        ("NONE", "UNKNOWN"),
+        ("none", "UNKNOWN"),
+        ("SDR", "SDR"),
+        ("sdr", "SDR"),
+        ("  SDR  ", "SDR"),
+        ("Standard Dynamic Range SDR", "SDR"),
+        ("DOVI", "DOLBY VISION"),
+        ("dovi", "DOLBY VISION"),
+        ("DOLBY", "DOLBY VISION"),
+        ("dolby", "DOLBY VISION"),
+        ("VISION", "DOLBY VISION"),
+        ("vision", "DOLBY VISION"),
+        ("DV", "DOLBY VISION"),
+        ("dv", "DOLBY VISION"),
+        ("DOLBY VISION", "DOLBY VISION"),
+        ("dovi profile 8", "DOLBY VISION"),
+        ("HDR", "HDR"),
+        ("hdr", "HDR"),
+        ("HLG", "HDR"),
+        ("hlg", "HDR"),
+        ("hdr10", "HDR"),
+        ("HDR10+", "HDR"),
+        ("hlg10", "HDR"),
+        ("Some Random String", "HDR"),
+        ("SDR with HDR", "SDR"),
+        ("DOVI with SDR", "SDR"),
+        ("HDR with DOVI", "DOLBY VISION"),
+    ],
+)
+def test_classify_dynamic_range(dynamic_range, expected):
+    assert classify_dynamic_range(dynamic_range) == expected
 
 
 def test_is_high_quality_by_height_threshold(monkeypatch):

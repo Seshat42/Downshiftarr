@@ -1,15 +1,16 @@
-import pytest
-import sys
 import os
+import sys
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from Downshiftarr import media_dynamic_range
+
 
 class MockObj:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+
 
 def test_media_dynamic_range_explicit_attrs():
     # videoDynamicRange
@@ -24,6 +25,7 @@ def test_media_dynamic_range_explicit_attrs():
     obj = MockObj(videoDynamicRangeType="Dolby Vision")
     assert media_dynamic_range(obj) == "DOLBY VISION"
 
+
 def test_media_dynamic_range_stream_inspection_dolby_vision():
     # DOVIPresent
     stream = MockObj(streamType=1, DOVIPresent="1")
@@ -37,12 +39,14 @@ def test_media_dynamic_range_stream_inspection_dolby_vision():
     obj = MockObj(parts=[part])
     assert media_dynamic_range(obj) == "DOLBY VISION"
 
+
 def test_media_dynamic_range_stream_inspection_hdr():
     # colorSpace
     stream = MockObj(streamType=1, colorSpace="bt2020nc (HDR)")
     part = MockObj(streams=[stream])
     obj = MockObj(parts=[part])
     assert media_dynamic_range(obj) == "HDR"
+
 
 def test_media_dynamic_range_ignore_non_video_streams():
     # Stream type 2 (audio) has dolbyVision, should be ignored
@@ -51,9 +55,11 @@ def test_media_dynamic_range_ignore_non_video_streams():
     obj = MockObj(parts=[part])
     assert media_dynamic_range(obj) == "UNKNOWN"
 
+
 def test_media_dynamic_range_unknown():
     obj = MockObj()
     assert media_dynamic_range(obj) == "UNKNOWN"
+
 
 def test_media_dynamic_range_exception():
     # Raise exception during stream access
@@ -74,7 +80,7 @@ def test_media_dynamic_range_stream_inspection_no_hdr_dovi_found():
         colorSpace="sdr",
         colorTransfer="sdr",
         colorPrimaries="sdr",
-        hdr="sdr"
+        hdr="sdr",
     )
     part = MockObj(streams=[stream])
     obj = MockObj(parts=[part])

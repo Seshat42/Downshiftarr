@@ -1,0 +1,114 @@
+# Downshiftarr Threat Model
+
+Last reviewed: 2026-05-28
+
+References checked for this baseline:
+
+- Plex Support: Finding an authentication token / X-Plex-Token
+- Plex API documentation: `X-Plex-Token` header authorization on Plex APIs
+- Tautulli custom script documentation: injected `PLEX_URL`, `PLEX_TOKEN`, `PLEX_USER_TOKEN`, `TAUTULLI_URL`, and `TAUTULLI_APIKEY`
+- Tautulli API reference: `api/v2` requests authenticated with `apikey`
+- Plex Support: transcoder settings and transcoding behavior
+
+## Scope
+
+Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security boundary includes:
+
+- `Downshiftarr.py`, which reads Plex/Tautulli tokens, inspects active Plex sessions, selects fallback media, sends client-control commands, and terminates sessions when policy requires it.
+- `Downshiftarr.env`, deployment environment variables, and Tautulli-injected script environment.
+- The optional `Plex Transcoder` shim, which can run in the Plex transcoder execution path.
+- Logs written to `LOG_FILE`, stderr captured by Tautulli, and optional Tautulli notification history.
+- CI/test/scan artifacts used to prove policy and secret-handling behavior.
+
+## Assets
+
+- Plex admin token: `PLEX_TOKEN`.
+- Plex user token: `PLEX_USER_TOKEN`.
+- Tautulli API key: `TAUTULLI_APIKEY`.
+- Plex session identifiers: `session_id`, `session_key`, machine/client identifiers, user names, rating keys, player names, addresses, and ports.
+- Media metadata: selected media height, dynamic range, media ids, file names, version lists, and fallback choices.
+- Enforcement authority: client remote-control commands and session termination through Tautulli or Plex.
+- Plex transcoder execution path when the shim is installed.
+
+## Trust Boundaries
+
+- Tautulli event payloads are trigger data only. They can be stale, incomplete, or shaped by notification configuration.
+- Plex session metadata is the source of truth once a session is matched.
+- Local env files and process environment are trusted only if filesystem permissions and service/container boundaries are correct.
+- Plex/Tautulli HTTP APIs are trusted only over the configured local or private network path. Do not expose unauthenticated or token-bearing endpoints publicly.
+- The `Plex Transcoder` shim is a high-privilege local integration point because Plex invokes it while handling playback.
+
+## Primary Threats
+
+### Token Leakage
+
+Plex and Tautulli tokens grant operational authority over the media server and monitoring plane. They must not be committed, printed, copied into screenshots, or stored in world-readable files.
+
+Known current risk: main still has direct Plex termination using `X-Plex-Token` as a URL query parameter. Query tokens can leak through request logs, reverse proxies, browser/history-style diagnostics, crash dumps, and copied URLs. PR #10 / branch `fix-plex-token-exposure-14819038041623419576` moves this direct Plex fallback token into the `X-Plex-Token` header and should be merged or re-applied after review.
+
+Tautulli API calls still use Tautulli's documented `apikey` query parameter. Treat that as an upstream API constraint and compensate with local/private network exposure, TLS when crossing hosts, strict log redaction, and key rotation after suspected exposure.
+
+### Privileged Transcoder Shim
+
+The optional `Plex Transcoder` shim is riskier than the Tautulli script because it sits in Plex's transcoder execution path and delegates to the real transcoder binary.
+
+Risks:
+
+- A bug can break playback globally.
+- Compromise of the shim or its config can affect every transcode.
+- Token-in-query use in the shim's `/search` call can leak `PLEX_TOKEN`; PR #10 moves that token to a header.
+- Logging media paths, basenames, or API errors may expose library structure.
+
+Minimum controls:
+
+- Install only from a reviewed commit.
+- Keep the real transcoder path explicit and immutable.
+- Restrict write access to the shim, env/config, and log file.
+- Prefer a dedicated local-only Plex token if a shim token is unavoidable.
+- Keep a fast rollback path to the original Plex Transcoder binary.
+
+### Fail-Closed Behavior Limits
+
+Downshiftarr is intended to fail closed by default for protected transcodes, but fail-closed is best effort, not a hard security boundary.
+
+Limits:
+
+- If Plex cannot be reached, the script may lack a Plex handle for Plex-side termination.
+- If Tautulli cannot be reached or lacks a matching session key, Tautulli termination can fail.
+- If client discovery or remote control fails, only termination remains.
+- If a notification trigger fires before Plex has registered the session, matching depends on retries and identifiers.
+- Per-failure `KILL_ON_*` toggles can intentionally weaken fail-closed behavior.
+- Network, relay, NAT, token scope, Plex/Tautulli version changes, or API failures can prevent enforcement.
+
+Security posture: fail closed reduces accidental policy bypass, but deployment must still monitor failures and alert on repeated "unable to terminate" outcomes.
+
+### Log Exposure
+
+Logs may contain usernames, rating keys, session ids/keys, machine ids, media metadata, player details, file basenames, and exception text. They must never contain `PLEX_TOKEN`, `PLEX_USER_TOKEN`, or `TAUTULLI_APIKEY`.
+
+Controls:
+
+- Redact known secret names and token-looking values before logging.
+- Keep debug logging off in routine production use.
+- Ensure `LOG_FILE` is not world-readable and has bounded retention.
+- Treat Tautulli notification history as a log sink with the same sensitivity as local logs.
+- Add regression tests that fail when log output includes known secret values.
+
+## Abuse Cases
+
+- An attacker with read access to `Downshiftarr.env` controls Plex sessions or terminates users' streams.
+- A reverse proxy or debug log captures a Plex token from a query string.
+- A malicious local user modifies `Plex Transcoder` and gains execution in the Plex playback path.
+- A noisy debug run leaks session identifiers or media paths to shared logs.
+- A permissive `KILL_ON_*` configuration silently turns protected-transcode enforcement into observe-only behavior.
+- A CI workflow uploads raw scan artifacts containing env files or logs with secrets.
+
+## Next Security Priorities
+
+1. Merge or re-apply PR #10 token-in-header remediation for direct Plex calls and the transcoder shim.
+2. Add a central redaction helper and route every log/notification message through it.
+3. Add tests with sentinel secrets proving no token reaches logs, stderr, Tautulli notification payloads, or exception output.
+4. Document and test secure file permissions for `Downshiftarr.env`, log files, and the optional shim.
+5. Add CI secret scanning and artifact hygiene checks.
+6. Add operational alerts for repeated fail-closed termination failures.
+7. Decide whether the `Plex Transcoder` shim remains supported; if yes, give it a separate hardening guide and rollback checklist.

@@ -1,5 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
 .coverage
-__pycache__
+coverage.xml
+htmlcov/
+
+# Local virtual environments
+.venv/
+*.egg-info/
+
+# Local configuration and secrets
+.env
+*.env
+Downshiftarr.env
+
+# Runtime logs and caches
+*.log
 downshiftarr.log
-tests/__pycache__
-__pycache__
+plex_transcoder_shim.log
+downshiftarr_plex_transcoder_cache.json
+
+# Local security/tool output
+codex-security-scans/
+security-scans/
+bandit.sarif
+gitleaks.sarif

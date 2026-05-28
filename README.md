@@ -1,5 +1,3 @@
-Check out the dev branch.
-
 # Downshiftarr
 
 Downshiftarr is a **Plex 4K/HDR/DV transcode guard** designed to be run from a **Tautulli “Script” notification**.
@@ -13,12 +11,16 @@ When a client tries to **VIDEO transcode** a protected source (4K and/or HDR/DV)
 
 The script is built to be fast (early exits; minimal calls) and robust (multiple fallbacks; fail-closed by default).
 
+> Development note: as of the 2026-05-28 office bootstrap, all remote branches are preserved locally for intake. Do not
+> merge branch histories during bootstrap; the next phase is deliberate branch-by-branch consolidation into `main`.
+
 ---
 
 ## Contents
 
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
+- [Development setup](#development-setup)
 - [Installation](#installation)
 - [Tautulli setup](#tautulli-setup)
 - [Configuration](#configuration)
@@ -50,7 +52,7 @@ If it’s protected **and** video is being transcoded:
 ### Software
 - **Plex Media Server** (reachable from where Tautulli runs)
 - **Tautulli** with Script notifications enabled
-- **Python 3** (3.8+ recommended)
+- **Python 3** (3.10+ recommended)
 
 ### Python packages
 - `plexapi`
@@ -69,6 +71,23 @@ python3 -m pip install --upgrade plexapi requests python-dotenv
 
 ---
 
+## Development setup
+
+The repository is maintained WSL-first. From the project root:
+
+```bash
+uv sync --all-groups
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run pip-audit
+uv run bandit -c pyproject.toml -r Downshiftarr.py "Plex Transcoder" --baseline docs/security/bandit-baseline.json
+```
+
+Use Windows `gh` for authenticated GitHub metadata until WSL `gh auth login` is configured.
+
+---
+
 ## Installation
 
 1) Put the script somewhere Tautulli can execute it, for example:
@@ -81,9 +100,9 @@ python3 -m pip install --upgrade plexapi requests python-dotenv
 chmod +x /opt/tautulli/scripts/Downshiftarr.py
 ```
 
-3) Create the configuration file next to the script:
+3) Create the configuration file next to the script from the tracked example:
 ```bash
-/opt/tautulli/scripts/Downshiftarr.env
+cp /opt/tautulli/scripts/Downshiftarr.env.example /opt/tautulli/scripts/Downshiftarr.env
 ```
 
 4) Protect the env file (recommended because it contains tokens):
@@ -107,7 +126,7 @@ In Tautulli:
 Configure:
 
 **Script Folder**
-- The directory containing `Downshiftarr.py` and `Downshiftarr.env`
+- The directory containing `Downshiftarr.py` and your local `Downshiftarr.env`
 
 **Script**
 - `Downshiftarr.py`
@@ -143,7 +162,7 @@ Downshiftarr loads configuration from:
 - `Downshiftarr.env` in the same directory as the script (recommended), or
 - normal environment variables (OS / container / service manager)
 
-A complete example file is included as `Downshiftarr.env`.
+A complete example file is included as `Downshiftarr.env.example`.
 
 ### Required settings
 

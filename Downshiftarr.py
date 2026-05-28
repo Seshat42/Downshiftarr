@@ -106,10 +106,10 @@ Dependencies
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import time
-import logging
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -213,9 +213,12 @@ TAUTULLI_LOG_SUBJECT = env_str("TAUTULLI_LOG_SUBJECT", "Downshiftarr")
 EXEMPT_USERS = env_csv_set("EXEMPT_USERS", "")
 
 MAX_ALLOWED_HEIGHT = env_int("MAX_ALLOWED_HEIGHT", 2000) or 2000  # <2000 ~= avoid 2160p
-PREFER_HEIGHTS = tuple(
-    int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480").split(",") if x.strip().isdigit()
-) or (1080, 720, 576, 480)
+PREFER_HEIGHTS = tuple(int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480").split(",") if x.strip().isdigit()) or (
+    1080,
+    720,
+    576,
+    480,
+)
 
 FALLBACK_SDR_ONLY = env_bool("FALLBACK_SDR_ONLY", True)
 ALLOW_HDR_FALLBACK = env_bool("ALLOW_HDR_FALLBACK", False)
@@ -253,8 +256,12 @@ KILL_MESSAGE_UNEXPECTED_ERROR = env_str("KILL_MESSAGE_UNEXPECTED_ERROR", KILL_ME
 # Decisions that are considered "not transcoding video" for enforcement purposes.
 # (Tautulli/Plex may use different casing/spaces; we normalize.)
 ALLOW_VIDEO_DECISIONS = {
-    "direct play", "directplay", "direct_play",
-    "direct stream", "directstream", "direct_stream",
+    "direct play",
+    "directplay",
+    "direct_play",
+    "direct stream",
+    "directstream",
+    "direct_stream",
     "copy",
 }
 
@@ -431,6 +438,7 @@ def connect_plex():
 
     try:
         from plexapi.server import PlexServer  # type: ignore
+
         return PlexServer(PLEX_URL, token, session=PLEX_HTTP, timeout=int(HTTP_TIMEOUT_S))
     except Exception as e:
         raise RuntimeError(f"Failed to import/connect plexapi: {e}")
@@ -628,6 +636,7 @@ def pick_best_fallback_media_index(
       - Prefer heights in PREFER_HEIGHTS (user-configurable)
       - Otherwise prefer higher height under MAX_ALLOWED_HEIGHT
     """
+
     def candidate_score(h: int) -> Tuple[int, int]:
         if h in PREFER_HEIGHTS:
             pref_rank = PREFER_HEIGHTS.index(h)
@@ -764,10 +773,17 @@ def find_session(plex, ev: InputEvent) -> Optional[SessionContext]:
                 if score < 1000:
                     if best_score is None or score < best_score:
                         best_score = score
-                        best_payload = (s, sk, sid, uname, mid, str(ptitle) if ptitle is not None else None,
-                                        str(pproduct) if pproduct is not None else None,
-                                        str(paddr) if paddr is not None else None,
-                                        str(pport) if pport is not None else None)
+                        best_payload = (
+                            s,
+                            sk,
+                            sid,
+                            uname,
+                            mid,
+                            str(ptitle) if ptitle is not None else None,
+                            str(pproduct) if pproduct is not None else None,
+                            str(paddr) if paddr is not None else None,
+                            str(pport) if pport is not None else None,
+                        )
                     if best_score == 0:
                         break
 
@@ -841,6 +857,7 @@ def find_client(plex, ctx: SessionContext, fallback_machine_id: Optional[str]):
     # 3) Proxy only PlexClient with just the identifier (no direct connection required)
     try:
         from plexapi.client import PlexClient  # type: ignore
+
         for tid in target_ids:
             try:
                 pc = PlexClient(server=plex, identifier=tid, connect=False, timeout=int(HTTP_TIMEOUT_S))
@@ -858,6 +875,7 @@ def find_client(plex, ctx: SessionContext, fallback_machine_id: Optional[str]):
     if ctx.player_address and ctx.player_port and target_ids:
         try:
             from plexapi.client import PlexClient  # type: ignore
+
             baseurl = "http://%s:%s" % (ctx.player_address, ctx.player_port)
             for tid in target_ids:
                 try:
@@ -1050,8 +1068,16 @@ def main(argv: List[str]) -> int:
     log.info(
         "Trigger: action=%s user=%s rating_key=%s session_id=%s session_key=%s machine_id=%s video_decision=%s "
         "video_resolution=%s stream_video_resolution=%s video_dynamic_range=%s",
-        ev.action, ev.username, ev.rating_key, ev.session_id, ev.session_key, ev.machine_id, ev.video_decision,
-        ev.video_resolution, ev.stream_video_resolution, ev.video_dynamic_range,
+        ev.action,
+        ev.username,
+        ev.rating_key,
+        ev.session_id,
+        ev.session_key,
+        ev.machine_id,
+        ev.video_decision,
+        ev.video_resolution,
+        ev.stream_video_resolution,
+        ev.video_dynamic_range,
     )
 
     # User exemptions

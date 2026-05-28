@@ -41,7 +41,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-
 # =====================================================================================
 # Configuration
 # =====================================================================================
@@ -543,6 +542,9 @@ def _load_cache() -> Dict[str, CacheEntry]:
         for k, v in raw_entries.items():
             try:
                 ts = float(v.get("ts", 0))
+            except (AttributeError, TypeError, ValueError):
+                log("DEBUG", f"Ignoring invalid cache entry key={k!r}")
+            else:
                 if ts <= 0 or (now - ts) > CACHE_TTL_S:
                     continue
                 entries[k] = CacheEntry(
@@ -553,8 +555,6 @@ def _load_cache() -> Dict[str, CacheEntry]:
                     fallback_dr=str(v.get("fallback_dr", "UNKNOWN")),
                     fallback_max_stream_index=safe_int(v.get("fallback_max_stream_index")),
                 )
-            except Exception:
-                continue
         return entries
     except Exception:
         return {}

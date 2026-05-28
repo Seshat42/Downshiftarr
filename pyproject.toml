@@ -46,6 +46,15 @@ addopts = [
 ]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "unit: fast pure unit tests with no external services",
+    "simulated: deterministic fake Plex/Tautulli/client tests",
+    "media: generated-media tests that require ffmpeg/ffprobe",
+    "loki: opt-in tests that contact the local Loki Plex server",
+    "browser: opt-in browser smoke tests against local Plex Web",
+    "destructive: opt-in tests allowed to mutate the local Loki Plex test library or terminate test sessions",
+    "slow: intentionally slower tests excluded from tight loops unless selected",
+]
 
 [tool.ruff]
 target-version = "py310"

@@ -73,3 +73,28 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Case-safety rule remains active: do not reintroduce root `test_downshiftarr.py` or `test_Downshiftarr.py`; all branch test coverage now lives under lowercase `tests/`.
 - Remote cleanup outcome: `main` was pushed to GitHub at `6c70c39`; GitHub automatically marked PRs #5, #7, #8, #9, #10, #11, #12, and #14 as merged at 2026-05-28 05:37:55 UTC.
 - Remote branch cleanup outcome: after ancestry verification against `origin/main`, every non-`main` remote branch was deleted. GitHub branch API returned only `main`, local remote tracking returned only `origin/HEAD -> origin/main` and `origin/main`, and the open PR list was empty.
+
+### Robust Test Environment
+
+- User instruction: generate a robust and in-depth testing environment for Downshiftarr using the locally installed Windows Plex server named Loki where real Plex proof is needed.
+- Active implementation branch: `codex/robust-test-environment`.
+- WSL remains the primary shell for development, unit tests, simulated tests, generated-media tests, lint, and security gates.
+- Windows PowerShell is the intended runner for real Loki Plex integration because Windows can reach `http://127.0.0.1:32400` and WSL currently cannot.
+- Loki identity observed on 2026-05-28 from Windows `/identity`: Plex Media Server `1.43.2.10687-563d026ea`, machineIdentifier `165cc0187d76937eb104da8d46437bf5443ec503`.
+- Real-server tests are local-only. They must not target Bragi, TooB, relay URLs, hosted Plex, external Plex, or any non-loopback server.
+- Generated test media belongs under ignored `artifacts/plex-test-media/`; do not commit videos, local manifests from private runs, screenshots, logs, or tokens.
+- Local test secrets belong only in ignored `Downshiftarr.test.env`.
+
+### Robust Test Q&A
+
+- Q: Which real Plex server may be mutated for test proof?
+- A: Only Loki, the local Windows Plex server, and only after `scripts/testing/loki_guard.py` verifies loopback URL plus expected Plex machine identity.
+
+- Q: Can destructive tests refresh a real Plex library or terminate sessions?
+- A: Yes, but only for the dedicated Loki-generated-media test lane after `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1` is set in ignored local config.
+
+- Q: Should CI run Loki, browser, or destructive tests?
+- A: No. CI runs `uv run pytest -m "not loki and not browser and not destructive"` because GitHub Actions cannot reach the local Windows Plex server and must not require secrets.
+
+- Q: How are smart TV and other client behaviors covered without every device present?
+- A: The simulated harness models Plex Web, Roku, Apple TV, Android TV/Fire TV, Chromecast, Samsung Tizen, LG webOS, consoles, mobile, Plex HTPC, relay, and unknown clients. Real devices can be added as follow-up proof, but deterministic simulated coverage comes first.

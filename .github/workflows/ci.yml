@@ -33,7 +33,7 @@ jobs:
         run: uv sync --all-groups --python ${{ matrix.python-version }}
 
       - name: Run tests
-        run: uv run pytest --cov=Downshiftarr --cov-report=term-missing
+        run: uv run pytest -m "not loki and not browser and not destructive" --cov=Downshiftarr --cov-report=term-missing
 
       - name: Run Ruff lint
         run: uv run ruff check .

@@ -43,3 +43,11 @@ These instructions apply to the entire `C:\Users\D3\Documents\Downshiftarr` work
 - Record verification commands and results in the final response for each task.
 - If verification cannot be run, state why and record the remaining risk.
 - For docs-only lanes, verify at minimum that only intended documentation files changed, plus any relevant repository state checks.
+
+## Test Rig Rules
+
+- Keep fast unit and simulated tests WSL-first and deterministic.
+- Treat generated media under `artifacts/plex-test-media/` as disposable local output; never commit generated videos, manifests from private runs, screenshots, logs, or tokens.
+- Real Plex integration tests may target only the local Windows Plex server named Loki through the guarded loopback runner.
+- Do not point real-server tests at Bragi, TooB, remote Plex hosts, relay URLs, or any non-loopback Plex URL.
+- Destructive Loki tests require explicit local opt-in through `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1`.

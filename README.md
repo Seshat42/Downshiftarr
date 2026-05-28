@@ -172,7 +172,9 @@ The repository is maintained WSL-first. From the project root:
 
 ```bash
 uv sync --all-groups
-uv run pytest
+uv run pytest -m "not loki and not browser and not destructive"
+uv run pytest -m simulated
+uv run pytest -m media
 uv run ruff check .
 uv run ruff format --check .
 uv run pip-audit
@@ -180,6 +182,19 @@ uv run bandit -c pyproject.toml -r Downshiftarr.py "Plex Transcoder" --baseline 
 ```
 
 Use Windows `gh` for authenticated GitHub metadata until WSL `gh auth login` is configured.
+
+Testing docs:
+
+- `docs/testing/test-environment.md` describes the layered rig and marker policy.
+- `docs/testing/client-matrix.md` lists simulated Plex client profiles and scenarios.
+- `docs/testing/loki-runbook.md` covers the opt-in Windows Loki Plex integration lane.
+
+Real Plex tests are local-only and guarded. Copy `Downshiftarr.test.env.example` to `Downshiftarr.test.env`, fill in local Loki values, and run the Windows wrapper only when you intentionally want real-server proof:
+
+```powershell
+.\scripts\testing\Invoke-LokiIntegration.ps1
+.\scripts\testing\Invoke-LokiIntegration.ps1 -Destructive
+```
 
 ---
 

@@ -67,6 +67,19 @@ Required gates for security-sensitive changes:
 - A targeted check that Plex direct API fallbacks and shim API calls do not send `X-Plex-Token` in query parameters.
 - Artifact review proving scan outputs do not include raw env files, full secrets, or unrestricted logs.
 
+## Local Loki Test Rig
+
+The real-server test environment is allowed to mutate only the local Windows Plex instance named Loki. It is not a production proof target and must not be reused for Bragi, TooB, hosted Plex, relay URLs, or any non-loopback server.
+
+Baseline controls:
+
+- Default URL: `http://127.0.0.1:32400`.
+- Identity guard: `scripts/testing/loki_guard.py` rejects non-loopback URLs, unclaimed Plex identities, and unexpected machine identifiers before any destructive test path.
+- Token handling: Loki tests use `X-Plex-Token` headers and local ignored `Downshiftarr.test.env` values.
+- Destructive opt-in: library refresh, generated-media import, and enforcement scenarios require `DOWNSHIFTARR_LOKI_ALLOW_DESTRUCTIVE=1`.
+- Data isolation: generated files live under ignored `artifacts/plex-test-media/` and should be used with a dedicated Plex library such as `Downshiftarr Test Rig`.
+- Browser smoke is optional and must not save authenticated screenshots or traces unless reviewed for secrets.
+
 ## Scan Artifact Layout
 
 Use this local layout for repeatable security evidence:

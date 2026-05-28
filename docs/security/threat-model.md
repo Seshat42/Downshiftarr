@@ -37,6 +37,7 @@ Downshiftarr is a Tautulli-triggered Plex enforcement script. Its security bound
 - Local env files and process environment are trusted only if filesystem permissions and service/container boundaries are correct.
 - Plex/Tautulli HTTP APIs are trusted only over the configured local or private network path. Do not expose unauthenticated or token-bearing endpoints publicly.
 - The `Plex Transcoder` shim is a high-privilege local integration point because Plex invokes it while handling playback.
+- The Loki test rig is a separate local-only trust boundary. Real integration tests must prove the loopback Plex identity before any mutation and must never target Bragi, TooB, relay, or external Plex URLs.
 
 ## Primary Threats
 
@@ -102,6 +103,7 @@ Controls:
 - A noisy debug run leaks session identifiers or media paths to shared logs.
 - A permissive `KILL_ON_*` configuration silently turns protected-transcode enforcement into observe-only behavior.
 - A CI workflow uploads raw scan artifacts containing env files or logs with secrets.
+- A developer accidentally points destructive tests at a production or external Plex server. The Loki guard rejects non-loopback URLs and unexpected machine identifiers to fail closed before library refresh or session enforcement.
 
 ## Next Security Priorities
 

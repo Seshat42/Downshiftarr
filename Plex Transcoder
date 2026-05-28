@@ -597,7 +597,6 @@ def _save_cache(entries: Dict[str, CacheEntry]) -> None:
         except Exception:
             pass
 
-
 # =====================================================================================
 # Plex lookup: (file path) -> (library item) -> (fallback file)
 # =====================================================================================

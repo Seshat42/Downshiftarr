@@ -27,6 +27,9 @@ plex_transcoder_shim.log
 downshiftarr_plex_transcoder_cache.json
 
 # Local/generated test rig output
+.sample-media/
+generated-media/
+emulator-lab/
 artifacts/
 artifacts/hardening/
 build/

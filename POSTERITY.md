@@ -143,3 +143,13 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Added sanitized aggregate telemetry to both the shim and `Downshiftarr.py`: outcome counters, client-family buckets, version-index statuses, and latency summaries only. Raw usernames, tokens, IPs, rating keys, session ids, machine identifiers, and watch timelines remain out of telemetry.
 - Added shadow-mode paths for both controller layers. Shadow mode records would-be downshift candidates and immediately passes through without Plex remote-control changes or input-file swaps.
 - Added regression coverage for budget exhaustion before lookup, budget-capped Plex HTTP timeouts, stale/empty version-index diagnostics, sanitized telemetry, shadow-mode pass-through, and mismatched `plex.client(player_title)` identifier refusal.
+
+## 2026-05-28 Emulator-Lab And Adaptive Learning Follow-Up
+
+- Q: Should this pass wait for physical Pixel/iPad/Roku/TV devices? A: No. The operator selected the heaviest feasible legitimate emulator lab plus synthetic release proof for this pass; physical client proof can be appended later.
+- Q: Should Downshiftarr learn automatically from Bragi outcomes? A: Yes, but only shadow-first with sanitized aggregate outcomes, confidence thresholds, and bounded churn. Deterministic rules remain authoritative until a learned fallback is promoted.
+- Q: Should Plex clients ever wait for Downshiftarr? A: No. The shim keeps the 100 ms p95 budget and passes through when cache, confidence, or timing is not good enough.
+- Implemented sanitized adaptive learning state in `Downshiftarr.py` for client-family/media-risk/fallback-height candidates. The state records aggregate success, continued-transcode, abandonment, and shadow counters only; it does not store usernames, tokens, IPs, rating keys, machine identifiers, session ids, or raw watch timelines.
+- Improved fallback scoring in both `Downshiftarr.py` and the Plex Transcoder shim so equal-height fallback candidates prefer broadly compatible audio and subtitle tracks, reducing forced audio transcodes and subtitle burn-in risk.
+- Added per-client-family p50/p95 latency telemetry and cache-oversize fail-open handling to the shim.
+- Added `scripts/testing/emulator_lab.py` and tests. The ignored local lab now contains a portable Android SDK/JDK setup with AVDs for Android mobile, Android tablet, Android TV, and Google TV. Samsung Tizen and LG webOS official emulator tooling remains documented as unavailable through the current unattended Windows package path; Apple simulators require macOS/Xcode; Roku and console retail Plex behavior requires physical hardware or synthetic proof.

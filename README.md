@@ -161,6 +161,8 @@ Key settings youâ€™ll care about first:
 - `VERSION_INDEX_FILE` â€“ optional precomputed Plex version index. When present, the shim checks it before live Plex search/section scans so first-segment decisions stay fast.
 - `VERSION_INDEX_MAX_AGE_S` - optional freshness limit for indexes that include `generated_at_epoch`; stale indexes are ignored and reported in telemetry.
 - `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget and passes through rather than making clients wait.
+- `MAX_CACHE_BYTES` - default `1000000`; oversized hot-path cache files are ignored and reported instead of delaying first-segment startup.
+- Shim telemetry records aggregate p50/p95 latency by client family, version-index hit/miss/stale counters, and no-fallback diagnostics without usernames, tokens, IPs, rating keys, or session identifiers.
 - `TELEMETRY_FILE` - optional sanitized aggregate counters for outcomes, client families, version-index status, and latency summaries. It must never contain usernames, tokens, IPs, rating keys, session ids, or raw watch timelines.
 - `SHADOW_MODE` - records would-be swaps and immediately passes through to the real transcoder. Use it for broad fleet observation before targeted enforcement.
 - `ENABLE_SECTION_SCAN_FALLBACK` â€“ default `True`; if Plex search returns no file-name results, the shim tries the matching library section by location and exact `Part` path. This keeps version lookup working for libraries whose search index hides version filenames.
@@ -218,6 +220,15 @@ python scripts/testing/verify_local.py
 ```
 
 GitHub is used only as remote Git storage. Real Plex/Tautulli/Loki proof remains local and WSL/Windows guarded.
+
+## Emulator and Client Coverage
+
+Downshiftarr keeps two complementary client proof layers:
+
+- `python scripts/testing/emulator_lab.py` inventories legitimate local emulator tooling. On this Windows/WSL workstation it supports the ignored portable Android lab for Android mobile, Android tablet, Android TV, and Google TV AVDs.
+- `tests/harness/client_profiles.py` and the simulated pytest matrix cover every modeled Plex family, including Roku, Fire TV, Android TV, Apple TV, iOS/iPadOS, desktop, web, Chromecast, Samsung/LG smart TVs, consoles, relay-like, unknown, and non-video accessories.
+
+Apple simulators require macOS/Xcode, while Roku and console Plex clients require physical devices for retail-app proof. Those cases stay synthetic in this pass, with physical results added as follow-up evidence when the devices are available.
 
 Optional local extra hygiene can be run with:
 
@@ -346,6 +357,10 @@ A complete example file is included as `Downshiftarr.env.example`.
 | `ENFORCEMENT_MODE` | `targeted` | Use `shadow` for observation-only evaluation before active enforcement |
 | `SHADOW_MODE` | `0` | Records candidates without changing playback when enabled |
 | `TELEMETRY_FILE` | blank | Optional sanitized aggregate counters and latency summaries |
+| `ADAPTIVE_LEARNING_ENABLED` | `0` | Enables shadow-first learned fallback preferences from sanitized aggregate outcomes |
+| `ADAPTIVE_LEARNING_FILE` | blank | Root/private aggregate state file for learned fallback candidates |
+| `ADAPTIVE_MIN_SAMPLES` | `5` | Minimum outcome count before a learned rule can be promoted |
+| `ADAPTIVE_CONFIDENCE_MIN` | `0.80` | Minimum success confidence before a learned fallback height is preferred |
 | `AUTO_WATERFALL_ON_CONTINUED_TRANSCODE` | `1` | Continue downshifting lower versions when the client still video-transcodes |
 | `WATERFALL_MIN_HEIGHT` | `360` | Lowest height the waterfall should try |
 

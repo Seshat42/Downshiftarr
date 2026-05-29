@@ -228,6 +228,10 @@ CACHE_FILE: str = "/config/downshiftarr_plex_transcoder_cache.json"
 # Cache time-to-live.
 CACHE_TTL_S: int = 60 * 60  # 1 hour
 
+# Protect the hot path from huge or corrupt cache files. Oversized cache files
+# are ignored and recorded in sanitized telemetry.
+MAX_CACHE_BYTES: int = 1_000_000
+
 
 # --- 10) Decision budget and sanitized telemetry --------------------------------------
 
@@ -291,6 +295,7 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "ENABLE_CACHE": bool,
     "CACHE_FILE": str,
     "CACHE_TTL_S": int,
+    "MAX_CACHE_BYTES": int,
     "DECISION_BUDGET_MS": int,
     "TELEMETRY_ENABLED": bool,
     "TELEMETRY_FILE": str,
@@ -519,7 +524,8 @@ def _empty_telemetry() -> dict:
         "version": 1,
         "outcomes": {},
         "client_families": {},
-        "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0},
+        "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0, "samples": []},
+        "latency_by_client_family": {},
         "version_index": {},
     }
 
@@ -528,6 +534,22 @@ def _increment_counter(root: dict, section: str, key: str, amount: int = 1) -> N
     bucket = root.setdefault(section, {})
     row = bucket.setdefault(key, {"count": 0})
     row["count"] = int(row.get("count", 0)) + amount
+
+
+def _record_latency(bucket: dict, elapsed_ms: float) -> None:
+    value = round(max(0.0, float(elapsed_ms)), 3)
+    bucket["count"] = int(bucket.get("count", 0)) + 1
+    bucket["sum"] = round(float(bucket.get("sum", 0.0)) + value, 3)
+    bucket["max"] = round(max(float(bucket.get("max", 0.0)), value), 3)
+    samples = bucket.setdefault("samples", [])
+    if isinstance(samples, list):
+        samples.append(value)
+        del samples[:-256]
+        ordered = sorted(float(v) for v in samples)
+        p50_idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.50 + 0.999999)))
+        p95_idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95 + 0.999999)))
+        bucket["p50"] = round(ordered[p50_idx], 3)
+        bucket["p95"] = round(ordered[p95_idx], 3)
 
 
 def record_telemetry(
@@ -555,11 +577,9 @@ def record_telemetry(
         if index_status:
             _increment_counter(data, "version_index", re.sub(r"[^a-z0-9_.-]+", "_", index_status.lower()).strip("_") or "unknown")
         if elapsed_ms is not None:
-            latency = data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0})
-            value = max(0.0, float(elapsed_ms))
-            latency["count"] = int(latency.get("count", 0)) + 1
-            latency["sum"] = round(float(latency.get("sum", 0.0)) + value, 3)
-            latency["max"] = round(max(float(latency.get("max", 0.0)), value), 3)
+            _record_latency(data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), elapsed_ms)
+            by_family = data.setdefault("latency_by_client_family", {})
+            _record_latency(by_family.setdefault(family, {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), elapsed_ms)
 
         tmp = TELEMETRY_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -786,6 +806,62 @@ def media_dynamic_range(media: dict) -> str:
     return "UNKNOWN"
 
 
+def media_audio_risk(media: dict) -> int:
+    """Lower is better. Prefer audio Plex clients commonly direct-play."""
+    risk = 0
+    try:
+        parts = media.get("Part") or []
+        if isinstance(parts, dict):
+            parts = [parts]
+        for part in parts:
+            streams = part.get("Stream") or []
+            if isinstance(streams, dict):
+                streams = [streams]
+            for st in streams:
+                if safe_int(st.get("streamType")) != 2:
+                    continue
+                codec = str(st.get("codec") or st.get("audioCodec") or "").lower()
+                channels = safe_int(st.get("channels")) or 0
+                if codec in {"truehd", "dts", "dca", "dtsma", "flac"}:
+                    risk += 4
+                elif codec in {"eac3", "ac3"}:
+                    risk += 1
+                elif codec and codec not in {"aac", "mp3", "opus"}:
+                    risk += 2
+                if channels > 6:
+                    risk += 2
+                elif channels > 2:
+                    risk += 1
+    except Exception:
+        return 3
+    return risk
+
+
+def media_subtitle_risk(media: dict) -> int:
+    """Lower is better. Avoid subtitle forms that often force burn-in."""
+    risk = 0
+    try:
+        parts = media.get("Part") or []
+        if isinstance(parts, dict):
+            parts = [parts]
+        for part in parts:
+            streams = part.get("Stream") or []
+            if isinstance(streams, dict):
+                streams = [streams]
+            for st in streams:
+                if safe_int(st.get("streamType")) != 3:
+                    continue
+                codec = str(st.get("codec") or "").lower()
+                forced = str(st.get("forced") or "").lower() in {"1", "true", "yes"}
+                if codec in {"pgs", "vobsub", "dvd_subtitle"}:
+                    risk += 3
+                if forced:
+                    risk += 1
+    except Exception:
+        return 2
+    return risk
+
+
 def part_max_stream_index(media: dict) -> Optional[int]:
     """Return the maximum stream index found in the first Part of this Media."""
     try:
@@ -930,6 +1006,9 @@ def _load_cache() -> Dict[str, CacheEntry]:
     if not (ENABLE_CACHE and CACHE_FILE):
         return {}
     try:
+        if MAX_CACHE_BYTES > 0 and os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > MAX_CACHE_BYTES:
+            record_telemetry("cache_oversized")
+            return {}
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         entries = {}
@@ -953,6 +1032,7 @@ def _load_cache() -> Dict[str, CacheEntry]:
                 )
         return entries
     except Exception:
+        record_telemetry("cache_unreadable")
         return {}
 
 
@@ -1277,13 +1357,14 @@ def pick_best_fallback(
 ) -> Optional[MediaInfo]:
     """Return the best fallback MediaInfo according to policy."""
 
-    def candidate_score(h: int) -> Tuple[int, int]:
+    def candidate_score(mi: MediaInfo) -> Tuple[int, int, int, int]:
+        h = mi.height or 0
         if h in PREFER_HEIGHTS:
             pref_rank = list(PREFER_HEIGHTS).index(h)
         else:
             # After preferred heights, pick the biggest under the max.
             pref_rank = len(PREFER_HEIGHTS) + (MAX_ALLOWED_HEIGHT - h)
-        return pref_rank, -h
+        return pref_rank, media_audio_risk(mi.media), media_subtitle_risk(mi.media), -h
 
     medias = full_item.get("Media") or []
     if isinstance(medias, dict):
@@ -1299,7 +1380,7 @@ def pick_best_fallback(
             passes = [("ALLOW_HDR_ONLY", False)]
 
     for pass_name, sdr_only in passes:
-        candidates: List[Tuple[MediaInfo, Tuple[int, int]]] = []
+        candidates: List[Tuple[MediaInfo, Tuple[int, int, int, int]]] = []
 
         for m in medias:
             mi = build_media_info(m)
@@ -1344,7 +1425,7 @@ def pick_best_fallback(
                 if mi.max_stream_index is None or mi.max_stream_index < required_max_stream:
                     continue
 
-            candidates.append((mi, candidate_score(mi.height)))
+            candidates.append((mi, candidate_score(mi)))
 
         if candidates:
             candidates.sort(key=lambda t: t[1])

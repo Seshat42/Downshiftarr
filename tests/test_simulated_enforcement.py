@@ -136,6 +136,24 @@ def test_fallback_selection_allows_same_plex_edition(monkeypatch):
     assert pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR") == 2
 
 
+def test_fallback_selection_prefers_client_friendly_audio_at_same_height():
+    def media_with_audio(media_id, height, dynamic_range, codec, channels):
+        row = media(media_id, height, dynamic_range)
+        row.parts[0].streams.append(attr(streamType=2, codec=codec, audioCodec=codec, channels=channels))
+        return row
+
+    item = attr(
+        media=[
+            media_with_audio("current-4k-hdr", 2160, "HDR", "truehd", 8),
+            media_with_audio("fallback-1080-truehd", 1080, "SDR", "truehd", 8),
+            media_with_audio("fallback-1080-aac", 1080, "SDR", "aac", 2),
+            media_with_audio("fallback-720-aac", 720, "SDR", "aac", 2),
+        ]
+    )
+
+    assert pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR") == 2
+
+
 def test_plex_terminate_session_uses_headers_not_token_query(monkeypatch):
     captured = {}
 
@@ -393,6 +411,41 @@ def test_telemetry_aggregates_client_family_without_user_identifiers(monkeypatch
     assert "192.0.2.55" not in text
 
 
+def test_log_context_redacts_operational_identifiers():
+    event = Downshiftarr.InputEvent(
+        username="Alice Example",
+        rating_key="rating-secret",
+        session_id="session-secret",
+        session_key="session-key-secret",
+        machine_id="machine-secret",
+        video_decision="transcode",
+        video_dynamic_range="HDR",
+    )
+    context = Downshiftarr.SessionContext(
+        session_item=object(),
+        session_key="session-key-secret",
+        session_id="session-secret",
+        username="Alice Example",
+        machine_id="machine-secret",
+        player_title="Alice Living Room Roku",
+        player_product="Plex for Roku",
+        player_address="192.0.2.55",
+        player_port="32400",
+        view_offset_ms=9876,
+    )
+
+    text = Downshiftarr.sanitized_event_context(event, context)
+
+    assert "decision=transcode" in text
+    assert "client_family=roku" in text
+    assert "Alice" not in text
+    assert "rating-secret" not in text
+    assert "session-secret" not in text
+    assert "machine-secret" not in text
+    assert "192.0.2.55" not in text
+    assert "9876" not in text
+
+
 def test_shadow_mode_records_candidate_without_remote_control(monkeypatch, tmp_path):
     import json
 
@@ -412,6 +465,95 @@ def test_shadow_mode_records_candidate_without_remote_control(monkeypatch, tmp_p
     assert terminations == []
     assert client.play_calls == []
     assert data["outcomes"]["shadow_downshift_candidate"]["count"] == 1
+
+
+def test_adaptive_learning_records_sanitized_shadow_candidate(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / "learning" / "adaptive.json"
+    profile = next(p for p in CLIENT_PROFILES if p.name == "roku")
+    session = protected_session(profile=profile, machine_identifier=profile.machine_identifier, view_offset=9876)
+    client = FakeClient(machine_identifier=profile.machine_identifier)
+    plex = FakePlexServer(sessions=[session], clients=[client])
+
+    monkeypatch.setattr(Downshiftarr, "SHADOW_MODE", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_ENABLED", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_FILE", str(path), raising=False)
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex, profile=profile)
+
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert code == 0
+    assert terminations == []
+    assert client.play_calls == []
+    assert data["version"] == 1
+    assert data["client_families"]["roku"]["candidates"]["2160_HDR_to_1080_SDR"]["shadow_candidates"] == 1
+    assert data["client_families"]["roku"]["candidates"]["2160_HDR_to_1080_SDR"]["target_height"] == 1080
+    assert profile.machine_identifier not in text
+    assert "Downshiftarr Test User" not in text
+    assert "9876" not in text
+
+
+def test_adaptive_learning_prefers_promoted_client_height(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / "learning" / "adaptive.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "client_families": {
+                    "roku": {
+                        "candidates": {
+                            "2160_HDR_to_720_SDR": {
+                                "source_height": 2160,
+                                "source_dynamic_range": "HDR",
+                                "target_height": 720,
+                                "target_dynamic_range": "SDR",
+                                "shadow_candidates": 2,
+                                "downshift_sent": 5,
+                                "continued_transcode": 0,
+                                "abandonment": 0,
+                                "success": 5,
+                            },
+                            "2160_HDR_to_1080_SDR": {
+                                "source_height": 2160,
+                                "source_dynamic_range": "HDR",
+                                "target_height": 1080,
+                                "target_dynamic_range": "SDR",
+                                "downshift_sent": 5,
+                                "continued_transcode": 4,
+                                "success": 1,
+                            },
+                        }
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    item = attr(
+        media=[
+            media("current-4k-hdr", 2160, "HDR", selected=True),
+            media("fallback-1080-sdr", 1080, "SDR"),
+            media("fallback-720-sdr", 720, "SDR"),
+            media("fallback-480-sdr", 480, "SDR"),
+        ]
+    )
+
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_ENABLED", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_FILE", str(path), raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_MIN_SAMPLES", 4, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_CONFIDENCE_MIN", 0.80, raising=False)
+
+    preferred = Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR")
+    chosen = pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR", preferred_height=preferred)
+
+    assert preferred == 720
+    assert chosen == 2
 
 
 def test_client_discovery_uses_player_title_lookup_when_enumeration_misses():

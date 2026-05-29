@@ -48,6 +48,12 @@ def shim_media_with_edition(file_path, height, dynamic_range="SDR", edition=""):
     return row
 
 
+def shim_media_with_streams(file_path, height, dynamic_range="SDR", streams=None):
+    row = shim_media(file_path, height, dynamic_range, stream_count=1)
+    row["Part"][0]["Stream"] = [{"streamType": 1, "height": height}] + list(streams or [])
+    return row
+
+
 def test_shim_fallback_selection_prefers_sdr_1080(monkeypatch):
     shim = load_shim()
     monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
@@ -108,6 +114,43 @@ def test_shim_fallback_selection_allows_same_plex_edition(monkeypatch):
     fallback = shim.pick_best_fallback(item, current, required_max_stream=None)
 
     assert fallback.file_path == "/media/movie {edition-Theatrical} - 1080p SDR.mkv"
+
+
+def test_shim_fallback_selection_prefers_client_friendly_audio_and_subtitles(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(shim, "MAX_FALLBACK_HEIGHT", 1080)
+    monkeypatch.setattr(shim, "FALLBACK_SDR_ONLY", True)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
+
+    current = shim.build_media_info(shim_media("/media/movie-2160-hdr.mkv", 2160, "HDR"))
+    item = {
+        "Media": [
+            current.media,
+            shim_media_with_streams(
+                "/media/movie-1080-sdr-truehd-pgs.mkv",
+                1080,
+                "SDR",
+                [
+                    {"streamType": 2, "codec": "truehd", "channels": 8},
+                    {"streamType": 3, "codec": "pgs", "forced": True},
+                ],
+            ),
+            shim_media_with_streams(
+                "/media/movie-1080-sdr-aac-srt.mkv",
+                1080,
+                "SDR",
+                [
+                    {"streamType": 2, "codec": "aac", "channels": 2},
+                    {"streamType": 3, "codec": "srt", "forced": False},
+                ],
+            ),
+        ]
+    }
+
+    fallback = shim.pick_best_fallback(item, current, required_max_stream=None)
+
+    assert fallback.file_path == "/media/movie-1080-sdr-aac-srt.mkv"
 
 
 def test_shim_fallback_selection_infers_sdr_from_filename_when_plex_metadata_is_thin(monkeypatch):
@@ -606,6 +649,39 @@ def test_shim_records_sanitized_aggregate_telemetry(monkeypatch, tmp_path):
     assert data["client_families"]["roku"]["count"] == 1
     assert "Alice" not in text
     assert "Plex for Roku" not in text
+
+
+def test_shim_telemetry_records_percentiles_by_client_family(monkeypatch, tmp_path):
+    shim = load_shim()
+    telemetry_path = tmp_path / "telemetry" / "shim.json"
+    monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
+
+    for value in (5.0, 12.0, 30.0, 90.0):
+        shim.record_telemetry("cache_swap", elapsed_ms=value, client_family="Plex for Roku / Alice", index_status="hit")
+
+    text = telemetry_path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert data["latency_ms"]["count"] == 4
+    assert data["latency_ms"]["p95"] == 90.0
+    assert data["latency_by_client_family"]["roku"]["count"] == 4
+    assert data["latency_by_client_family"]["roku"]["p95"] == 90.0
+    assert data["version_index"]["hit"]["count"] == 4
+    assert "Alice" not in text
+
+
+def test_shim_cache_loader_refuses_oversized_cache_without_delay(monkeypatch, tmp_path):
+    shim = load_shim()
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(" " * (shim.MAX_CACHE_BYTES + 1), encoding="utf-8")
+    telemetry_path = tmp_path / "telemetry" / "shim.json"
+    monkeypatch.setattr(shim, "CACHE_FILE", str(cache_path), raising=False)
+    monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
+
+    loaded = shim._load_cache()
+
+    data = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert loaded == {}
+    assert data["outcomes"]["cache_oversized"]["count"] == 1
 
 
 def test_shim_caps_plex_http_timeout_to_remaining_decision_budget(monkeypatch):

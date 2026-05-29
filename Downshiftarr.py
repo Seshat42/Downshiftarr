@@ -209,6 +209,10 @@ TELEMETRY_FILE = env_str("TELEMETRY_FILE", "")
 TELEMETRY_ENABLED = env_bool("TELEMETRY_ENABLED", True)
 ENFORCEMENT_MODE = env_str("ENFORCEMENT_MODE", "targeted").lower()
 SHADOW_MODE = env_bool("SHADOW_MODE", ENFORCEMENT_MODE == "shadow")
+ADAPTIVE_LEARNING_ENABLED = env_bool("ADAPTIVE_LEARNING_ENABLED", False)
+ADAPTIVE_LEARNING_FILE = env_str("ADAPTIVE_LEARNING_FILE", "")
+ADAPTIVE_MIN_SAMPLES = env_int("ADAPTIVE_MIN_SAMPLES", 5) or 5
+ADAPTIVE_CONFIDENCE_MIN = env_float("ADAPTIVE_CONFIDENCE_MIN", 0.80)
 
 # Tautulli "logging" (notification) configuration
 TAUTULLI_LOG_NOTIFIER_ID = env_int("TAUTULLI_LOG_NOTIFIER_ID", None)
@@ -370,7 +374,8 @@ def _empty_telemetry() -> Dict[str, Any]:
         "version": 1,
         "outcomes": {},
         "client_families": {},
-        "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0},
+        "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0, "samples": []},
+        "latency_by_client_family": {},
     }
 
 
@@ -379,6 +384,20 @@ def _increment_telemetry_counter(root: Dict[str, Any], section: str, key: str) -
     bucket = root.setdefault(section, {})
     row = bucket.setdefault(safe_key, {"count": 0})
     row["count"] = int(row.get("count", 0)) + 1
+
+
+def _record_latency(bucket: Dict[str, Any], value: float) -> None:
+    safe_value = round(max(0.0, float(value)), 3)
+    bucket["count"] = int(bucket.get("count", 0)) + 1
+    bucket["sum"] = round(float(bucket.get("sum", 0.0)) + safe_value, 3)
+    bucket["max"] = round(max(float(bucket.get("max", 0.0)), safe_value), 3)
+    samples = bucket.setdefault("samples", [])
+    if isinstance(samples, list):
+        samples.append(safe_value)
+        del samples[:-256]
+        ordered = sorted(float(v) for v in samples)
+        idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95 + 0.999999)))
+        bucket["p95"] = round(ordered[idx], 3)
 
 
 def record_telemetry(
@@ -401,27 +420,140 @@ def record_telemetry(
             data = _empty_telemetry()
 
         _increment_telemetry_counter(data, "outcomes", outcome)
-        _increment_telemetry_counter(
-            data,
-            "client_families",
-            safe_client_family(
-                getattr(ctx, "player_product", None),
-                getattr(ctx, "player_title", None),
-                getattr(ev, "video_decision", None),
-            ),
+        family = safe_client_family(
+            getattr(ctx, "player_product", None),
+            getattr(ctx, "player_title", None),
+            getattr(ev, "video_decision", None),
         )
+        _increment_telemetry_counter(data, "client_families", family)
         if latency_ms is not None:
-            latency = data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0})
-            value = max(0.0, float(latency_ms))
-            latency["count"] = int(latency.get("count", 0)) + 1
-            latency["sum"] = round(float(latency.get("sum", 0.0)) + value, 3)
-            latency["max"] = round(max(float(latency.get("max", 0.0)), value), 3)
+            _record_latency(data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), latency_ms)
+            by_family = data.setdefault("latency_by_client_family", {})
+            _record_latency(by_family.setdefault(family, {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), latency_ms)
 
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
         tmp.replace(path)
     except Exception:
         log.debug("Telemetry write failed", exc_info=True)
+
+
+def sanitized_event_context(ev: Optional["InputEvent"] = None, ctx: Optional["SessionContext"] = None) -> str:
+    parts: List[str] = []
+    if ev:
+        if ev.action:
+            parts.append(f"action={re.sub(r'[^a-z0-9_.-]+', '_', ev.action.lower()).strip('_') or 'unknown'}")
+        if ev.video_decision:
+            parts.append(f"decision={re.sub(r'[^a-z0-9_.-]+', '_', ev.video_decision.lower()).strip('_') or 'unknown'}")
+        if ev.video_dynamic_range:
+            parts.append(f"dynamic_range={classify_dynamic_range(ev.video_dynamic_range)}")
+        if ev.video_resolution or ev.stream_video_resolution:
+            parts.append(
+                "source_hint=%s stream_hint=%s"
+                % (parse_resolution_hint(ev.video_resolution), parse_resolution_hint(ev.stream_video_resolution))
+            )
+    if ctx:
+        parts.append(f"client_family={safe_client_family(ctx.player_product, ctx.player_title)}")
+    return " ".join(parts) if parts else "context=none"
+
+
+def _empty_learning_state() -> Dict[str, Any]:
+    return {"version": 1, "client_families": {}}
+
+
+def load_adaptive_learning() -> Dict[str, Any]:
+    if not (ADAPTIVE_LEARNING_ENABLED and ADAPTIVE_LEARNING_FILE):
+        return _empty_learning_state()
+    try:
+        data = json.loads(Path(ADAPTIVE_LEARNING_FILE).read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("version") != 1:
+            return _empty_learning_state()
+        families = data.get("client_families")
+        if not isinstance(families, dict):
+            return _empty_learning_state()
+        return data
+    except Exception:
+        return _empty_learning_state()
+
+
+def save_adaptive_learning(data: Dict[str, Any]) -> None:
+    if not (ADAPTIVE_LEARNING_ENABLED and ADAPTIVE_LEARNING_FILE):
+        return
+    try:
+        path = Path(ADAPTIVE_LEARNING_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        log.debug("Adaptive learning write failed", exc_info=True)
+
+
+def adaptive_candidate_key(source_height: Optional[int], source_dr: str, target_height: Optional[int], target_dr: str) -> str:
+    source = source_height if source_height is not None else "unknown"
+    target = target_height if target_height is not None else "unknown"
+    return f"{source}_{classify_dynamic_range(source_dr)}_to_{target}_{classify_dynamic_range(target_dr)}"
+
+
+def adaptive_record_candidate(
+    family: str,
+    source_height: Optional[int],
+    source_dr: str,
+    target_height: Optional[int],
+    target_dr: str,
+    outcome: str,
+) -> None:
+    if not ADAPTIVE_LEARNING_ENABLED:
+        return
+    safe_outcome = re.sub(r"[^a-z0-9_.-]+", "_", str(outcome).lower()).strip("_") or "unknown"
+    data = load_adaptive_learning()
+    family_row = data.setdefault("client_families", {}).setdefault(family or "unknown", {"candidates": {}})
+    candidates = family_row.setdefault("candidates", {})
+    key = adaptive_candidate_key(source_height, source_dr, target_height, target_dr)
+    row = candidates.setdefault(
+        key,
+        {
+            "source_height": source_height,
+            "source_dynamic_range": classify_dynamic_range(source_dr),
+            "target_height": target_height,
+            "target_dynamic_range": classify_dynamic_range(target_dr),
+        },
+    )
+    row[safe_outcome] = int(row.get(safe_outcome, 0)) + 1
+    save_adaptive_learning(data)
+
+
+def adaptive_preferred_height(family: str, source_height: Optional[int], source_dr: str) -> Optional[int]:
+    if not (ADAPTIVE_LEARNING_ENABLED and source_height is not None):
+        return None
+    source_drc = classify_dynamic_range(source_dr)
+    data = load_adaptive_learning()
+    candidates = data.get("client_families", {}).get(family or "unknown", {}).get("candidates", {})
+    best: Optional[Tuple[float, int, int]] = None
+    for row in candidates.values():
+        try:
+            if int(row.get("source_height")) != int(source_height):
+                continue
+            if str(row.get("source_dynamic_range", "")).upper() != source_drc:
+                continue
+            target_height = int(row.get("target_height"))
+            attempts = int(row.get("downshift_sent", 0)) + int(row.get("shadow_candidates", 0))
+            successes = int(row.get("success", 0))
+            continued = int(row.get("continued_transcode", 0))
+            abandoned = int(row.get("abandonment", 0))
+            observed = successes + continued + abandoned
+            samples = observed if observed > 0 else attempts
+            if samples < ADAPTIVE_MIN_SAMPLES:
+                continue
+            confidence = max(0.0, successes / max(1, observed)) if observed > 0 else 0.0
+            if confidence < ADAPTIVE_CONFIDENCE_MIN:
+                continue
+            candidate = (confidence, samples, target_height)
+            if best is None or candidate > best:
+                best = candidate
+        except Exception:
+            continue
+    return best[2] if best is not None else None
 
 
 # -------------------------
@@ -661,6 +793,50 @@ def media_dynamic_range(media_obj) -> str:
     return "UNKNOWN"
 
 
+def media_audio_risk(media_obj) -> int:
+    """Lower is better. Prefer broadly compatible audio for client UX."""
+    risk = 0
+    try:
+        for part in getattr(media_obj, "parts", []) or []:
+            for stream in getattr(part, "streams", []) or []:
+                if safe_int(getattr(stream, "streamType", None)) != 2:
+                    continue
+                codec = str(getattr(stream, "codec", "") or getattr(stream, "audioCodec", "") or "").lower()
+                channels = safe_int(getattr(stream, "channels", None)) or 0
+                if codec in {"truehd", "dts", "dca", "dtsma", "flac"}:
+                    risk += 4
+                elif codec in {"eac3", "ac3"}:
+                    risk += 1
+                elif codec and codec not in {"aac", "mp3", "opus"}:
+                    risk += 2
+                if channels > 6:
+                    risk += 2
+                elif channels > 2:
+                    risk += 1
+    except Exception:
+        return 3
+    return risk
+
+
+def media_subtitle_risk(media_obj) -> int:
+    """Lower is better. Image/forced subtitles can trigger burn-in."""
+    risk = 0
+    try:
+        for part in getattr(media_obj, "parts", []) or []:
+            for stream in getattr(part, "streams", []) or []:
+                if safe_int(getattr(stream, "streamType", None)) != 3:
+                    continue
+                codec = str(getattr(stream, "codec", "") or "").lower()
+                forced = str(getattr(stream, "forced", "") or "").lower() in {"1", "true", "yes"}
+                if codec in {"pgs", "vobsub", "dvd_subtitle"}:
+                    risk += 3
+                if forced:
+                    risk += 1
+    except Exception:
+        return 2
+    return risk
+
+
 _EDITION_TOKEN_RE = re.compile(r"\{edition-([^{}]+)\}", re.IGNORECASE)
 
 
@@ -772,6 +948,7 @@ def pick_best_fallback_media_index(
     current_media_id: Optional[str],
     current_height: Optional[int],
     current_dr: str,
+    preferred_height: Optional[int] = None,
 ) -> Optional[int]:
     """
     Choose the best fallback media index.
@@ -791,13 +968,15 @@ def pick_best_fallback_media_index(
       - Otherwise prefer higher height under MAX_ALLOWED_HEIGHT
     """
 
-    def candidate_score(h: int) -> Tuple[int, int]:
+    def candidate_score(media_obj, h: int) -> Tuple[int, int, int, int]:
+        if preferred_height is not None and h == preferred_height:
+            return (-1, media_audio_risk(media_obj), media_subtitle_risk(media_obj), -h)
         if h in PREFER_HEIGHTS:
             pref_rank = PREFER_HEIGHTS.index(h)
         else:
             # After preferred heights, pick the biggest under the max.
             pref_rank = len(PREFER_HEIGHTS) + (MAX_ALLOWED_HEIGHT - h)
-        return (pref_rank, -h)
+        return (pref_rank, media_audio_risk(media_obj), media_subtitle_risk(media_obj), -h)
 
     cur_drc = classify_dynamic_range(current_dr)
 
@@ -827,7 +1006,7 @@ def pick_best_fallback_media_index(
             passes = [("ALLOW_HDR_ONLY", False)]
 
     for pass_name, sdr_only in passes:
-        candidates: List[Tuple[int, int, str, Tuple[int, int]]] = []
+        candidates: List[Tuple[int, int, str, Tuple[int, int, int, int]]] = []
         for idx, m in enumerate(media_list):
             mid = str(getattr(m, "id", "") or "")
             if current_media_id and mid == current_media_id:
@@ -859,7 +1038,7 @@ def pick_best_fallback_media_index(
             if not acceptable:
                 continue
 
-            candidates.append((idx, h, dr, candidate_score(h)))
+            candidates.append((idx, h, dr, candidate_score(m, h)))
 
         if candidates:
             candidates.sort(key=lambda t: t[3])
@@ -1222,10 +1401,7 @@ def log_event(level_name: str, msg: str, ev: Optional[InputEvent] = None, ctx: O
     # Keep notifications concise; only send important ones.
     if should_tautulli_notify(level_name):
         parts = [msg]
-        if ev:
-            parts.append("user=%s rating_key=%s session_id=%s decision=%s" % (ev.username, ev.rating_key, ev.session_id, ev.video_decision))
-        if ctx:
-            parts.append("client=%s offset_ms=%s" % (ctx.player_title or ctx.machine_id, ctx.view_offset_ms))
+        parts.append(sanitized_event_context(ev, ctx))
         tautulli_notify(level_name, TAUTULLI_LOG_SUBJECT, " | ".join(parts))
 
 
@@ -1233,20 +1409,7 @@ def main(argv: List[str]) -> int:
     start_ts = time.monotonic()
     ev = parse_args(argv)
 
-    log.info(
-        "Trigger: action=%s user=%s rating_key=%s session_id=%s session_key=%s machine_id=%s video_decision=%s "
-        "video_resolution=%s stream_video_resolution=%s video_dynamic_range=%s",
-        ev.action,
-        ev.username,
-        ev.rating_key,
-        ev.session_id,
-        ev.session_key,
-        ev.machine_id,
-        ev.video_decision,
-        ev.video_resolution,
-        ev.stream_video_resolution,
-        ev.video_dynamic_range,
-    )
+    log.info("Trigger: %s", sanitized_event_context(ev, None))
 
     # User exemptions
     if ev.username and ev.username in EXEMPT_USERS:
@@ -1283,6 +1446,7 @@ def main(argv: List[str]) -> int:
 
     protected_source = is_high_quality(cur_h, cur_dr)
     continued_waterfall = should_waterfall_continued_transcode(cur_h, cur_dr)
+    client_family = safe_client_family(ctx.player_product, ctx.player_title, ev.video_decision)
 
     # If the current source isn't protected and waterfall is not useful, policy doesn't apply.
     if not protected_source and not continued_waterfall:
@@ -1291,13 +1455,14 @@ def main(argv: List[str]) -> int:
 
     # Choose a fallback
     item_for_versions = ctx.session_item
-    target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr)
+    preferred_height = adaptive_preferred_height(client_family, cur_h, cur_dr)
+    target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
 
     # If session metadata didn't expose all versions, retry using full library metadata once.
     if target_idx is None and ev.rating_key:
         try:
             item_for_versions = fetch_library_item(plex, ev.rating_key)
-            target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr)
+            target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
         except Exception as e:
             log_event("WARNING", "Unable to fetch library item for fallback selection: %s" % e, ev=ev, ctx=ctx)
             if protected_source and KILL_ON_NO_FALLBACK_MEDIA:
@@ -1309,8 +1474,12 @@ def main(argv: List[str]) -> int:
         if protected_source and KILL_ON_NO_FALLBACK_MEDIA:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
         return 0
+    target_media = (getattr(item_for_versions, "media", []) or [None])[target_idx]
+    target_h = media_height(target_media) if target_media is not None else None
+    target_dr = media_dynamic_range(target_media) if target_media is not None else "UNKNOWN"
 
     if SHADOW_MODE:
+        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "shadow_candidates")
         record_telemetry("shadow_downshift_candidate", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
         log_event(
             "INFO",
@@ -1365,11 +1534,13 @@ def main(argv: List[str]) -> int:
                     time.sleep(SEEK_RETRY_DELAY_S)
 
         record_telemetry("downshift_sent", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
+        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_sent")
         log_event("INFO", "Downshift command sent successfully.", ev=ev, ctx=ctx)
         return 0
 
     except Exception as e:
         record_telemetry("downshift_failed", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
+        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_failed")
         log_event("ERROR", "Downshift failed: %s" % e, ev=ev, ctx=ctx)
         if KILL_ON_SWITCH_FAIL:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_SWITCH_FAIL)

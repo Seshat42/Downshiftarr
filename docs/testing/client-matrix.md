@@ -41,3 +41,18 @@ Every video-capable profile should remain covered for:
 Accessory profiles are kept in the registry but must no-op unless Plex/Tautulli presents an actual video transcode session.
 
 Real devices can still reveal Plex-client quirks that a fake cannot model. When that happens, add the smallest deterministic simulated case first, then use Loki or a physical client to prove the real behavior.
+
+## Emulator Lab
+
+The emulator lab is a tiered proof, not a claim that every vendor ships a fully automatable Plex app surface.
+
+- Android mobile, Android tablet, Android TV, and Google TV use the official Android SDK command-line tools and Android Emulator when present. The local detector is `python scripts/testing/emulator_lab.py`.
+- Samsung Tizen TV and LG webOS TV coverage is tracked separately because the official vendor emulators require their own IDE/tooling and do not provide the same proof as a retail Plex app on hardware.
+- iOS, iPadOS, and tvOS simulators require macOS/Xcode, so this Windows/WSL host records them as unsupported by host and relies on physical Apple proof plus synthetic/HLS canaries.
+- Roku and console Plex proof requires physical devices for retail-app behavior; this pass uses deterministic synthetic coverage and records that limitation.
+
+Current local lab policy:
+
+- Real Android AVD targets should cover `android_mobile`, `android_tablet`, `android_tv`, and `google_tv` when the portable lab under ignored `emulator-lab/` is present.
+- Synthetic video profiles remain mandatory for Plex Web, desktop/HTPC, Roku, Fire TV, Android TV, Google TV, Nvidia Shield, Apple TV, iOS/iPadOS, Android, Chromecast, Samsung/LG smart TVs, consoles, relay-like, and unknown clients.
+- Any client defect discovered on hardware should become a small deterministic fixture before it is treated as fixed.

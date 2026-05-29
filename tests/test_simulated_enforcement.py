@@ -495,6 +495,23 @@ def test_adaptive_learning_records_sanitized_shadow_candidate(monkeypatch, tmp_p
     assert "9876" not in text
 
 
+def test_adaptive_learning_defaults_are_conservative():
+    assert Downshiftarr.ADAPTIVE_MIN_SAMPLES == 30
+    assert Downshiftarr.ADAPTIVE_CONFIDENCE_MIN == 0.95
+    assert Downshiftarr.ADAPTIVE_MAX_P95_MS == 75.0
+
+
+def test_video_capable_profiles_are_known_or_promotion_ineligible():
+    unknown = [
+        profile.name
+        for profile in video_capable_profiles()
+        if profile.name != "unknown"
+        and Downshiftarr.safe_client_family(profile.product, profile.platform, profile.player.title) == "unknown"
+    ]
+
+    assert unknown == []
+
+
 def test_adaptive_learning_prefers_promoted_client_height(monkeypatch, tmp_path):
     import json
 
@@ -517,6 +534,12 @@ def test_adaptive_learning_prefers_promoted_client_height(monkeypatch, tmp_path)
                                 "continued_transcode": 0,
                                 "abandonment": 0,
                                 "success": 5,
+                                "latency_ms": {
+                                    "count": 5,
+                                    "samples": [20.0, 24.0, 25.0, 26.0, 28.0],
+                                    "p95": 28.0,
+                                },
+                                "recent_outcomes": ["success", "success", "success", "success", "success"],
                             },
                             "2160_HDR_to_1080_SDR": {
                                 "source_height": 2160,
@@ -554,6 +577,156 @@ def test_adaptive_learning_prefers_promoted_client_height(monkeypatch, tmp_path)
 
     assert preferred == 720
     assert chosen == 2
+
+
+def test_adaptive_learning_requires_conservative_sample_and_confidence(monkeypatch, tmp_path):
+    import json
+
+    def write_candidate(*, successes: int, failures: int = 0):
+        samples = successes + failures
+        candidate = {
+            "source_height": 2160,
+            "source_dynamic_range": "HDR",
+            "target_height": 720,
+            "target_dynamic_range": "SDR",
+            "downshift_sent": samples,
+            "continued_transcode": failures,
+            "abandonment": 0,
+            "success": successes,
+            "latency_ms": {"count": samples, "samples": [24.0] * samples, "p95": 24.0},
+            "recent_outcomes": ["success"] * samples,
+        }
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_families": {"roku": {"candidates": {"2160_HDR_to_720_SDR": candidate}}},
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    path = tmp_path / "learning" / "adaptive.json"
+    path.parent.mkdir(parents=True)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_ENABLED", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_FILE", str(path), raising=False)
+
+    write_candidate(successes=29)
+    assert Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR") is None
+
+    write_candidate(successes=28, failures=2)
+    assert Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR") is None
+
+    write_candidate(successes=30)
+    assert Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR") == 720
+    assert Downshiftarr.adaptive_preferred_height("unknown", 2160, "HDR") is None
+
+
+def test_adaptive_learning_blocks_slow_or_recently_failed_promotions(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / "learning" / "adaptive.json"
+    path.parent.mkdir(parents=True)
+    candidate = {
+        "source_height": 2160,
+        "source_dynamic_range": "HDR",
+        "target_height": 720,
+        "target_dynamic_range": "SDR",
+        "downshift_sent": 30,
+        "continued_transcode": 0,
+        "abandonment": 0,
+        "success": 30,
+        "latency_ms": {
+            "count": 30,
+            "samples": [24.0] * 29 + [75.1],
+            "p95": 75.1,
+        },
+        "recent_outcomes": ["success"] * 30,
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "client_families": {"roku": {"candidates": {"2160_HDR_to_720_SDR": dict(candidate)}}},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_ENABLED", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_FILE", str(path), raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_MIN_SAMPLES", 30, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_CONFIDENCE_MIN", 0.95, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_MAX_P95_MS", 75.0, raising=False)
+
+    assert Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR") is None
+
+    candidate["latency_ms"]["samples"] = [24.0] * 30
+    candidate["latency_ms"]["p95"] = 24.0
+    candidate["recent_outcomes"] = ["success"] * 29 + ["downshift_failed"]
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "client_families": {"roku": {"candidates": {"2160_HDR_to_720_SDR": dict(candidate)}}},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    assert Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR") is None
+
+    candidate["recent_outcomes"] = ["success"] * 30
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "client_families": {"roku": {"candidates": {"2160_HDR_to_720_SDR": dict(candidate)}}},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    assert Downshiftarr.adaptive_preferred_height("roku", 2160, "HDR") == 720
+
+
+def test_adaptive_outcome_ingest_is_sanitized_aggregate_only(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / "learning" / "adaptive.json"
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_ENABLED", True, raising=False)
+    monkeypatch.setattr(Downshiftarr, "ADAPTIVE_LEARNING_FILE", str(path), raising=False)
+    monkeypatch.setattr(Downshiftarr, "TELEMETRY_FILE", "", raising=False)
+
+    code = Downshiftarr.main(
+        [
+            "Downshiftarr.py",
+            "--adaptive-outcome=success",
+            "--client-family=Plex for Roku / Alice",
+            "--video-resolution=2160",
+            "--video-dynamic-range=HDR",
+            "--target-video-resolution=720",
+            "--target-video-dynamic-range=SDR",
+            "--decision-latency-ms=24",
+            "--rating-key=secret-rating-key",
+            "--session-id=secret-session-id",
+            "--machine-id=secret-machine-id",
+            "--username=Alice",
+        ]
+    )
+
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert code == 0
+    assert data["client_families"]["roku"]["candidates"]["2160_HDR_to_720_SDR"]["success"] == 1
+    assert "Alice" not in text
+    assert "secret-rating-key" not in text
+    assert "secret-session-id" not in text
+    assert "secret-machine-id" not in text
 
 
 def test_client_discovery_uses_player_title_lookup_when_enumeration_misses():

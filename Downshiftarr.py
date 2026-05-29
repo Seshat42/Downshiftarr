@@ -211,8 +211,20 @@ ENFORCEMENT_MODE = env_str("ENFORCEMENT_MODE", "targeted").lower()
 SHADOW_MODE = env_bool("SHADOW_MODE", ENFORCEMENT_MODE == "shadow")
 ADAPTIVE_LEARNING_ENABLED = env_bool("ADAPTIVE_LEARNING_ENABLED", False)
 ADAPTIVE_LEARNING_FILE = env_str("ADAPTIVE_LEARNING_FILE", "")
-ADAPTIVE_MIN_SAMPLES = env_int("ADAPTIVE_MIN_SAMPLES", 5) or 5
-ADAPTIVE_CONFIDENCE_MIN = env_float("ADAPTIVE_CONFIDENCE_MIN", 0.80)
+ADAPTIVE_MIN_SAMPLES = env_int("ADAPTIVE_MIN_SAMPLES", 30) or 30
+ADAPTIVE_CONFIDENCE_MIN = env_float("ADAPTIVE_CONFIDENCE_MIN", 0.95)
+ADAPTIVE_MAX_P95_MS = env_float("ADAPTIVE_MAX_P95_MS", 75.0)
+ADAPTIVE_RECENT_OUTCOME_LIMIT = env_int("ADAPTIVE_RECENT_OUTCOME_LIMIT", 30) or 30
+ADAPTIVE_BLOCKING_OUTCOMES = {
+    "abandonment",
+    "boundary_ambiguous",
+    "continued_transcode",
+    "downshift_failed",
+    "edition_mismatch",
+    "playback_failure",
+    "switch_failed",
+    "version_mismatch",
+}
 
 # Tautulli "logging" (notification) configuration
 TAUTULLI_LOG_NOTIFIER_ID = env_int("TAUTULLI_LOG_NOTIFIER_ID", None)
@@ -366,6 +378,10 @@ def safe_client_family(*values: object) -> str:
         return "plex_web"
     if "htpc" in raw or "desktop" in raw:
         return "desktop"
+    if "windows" in raw or "macos" in raw or "linux" in raw:
+        return "desktop"
+    if "vizio" in raw or "vidaa" in raw or "hisense" in raw or "smart tv" in raw:
+        return "smart_tv"
     return "unknown"
 
 
@@ -502,6 +518,8 @@ def adaptive_record_candidate(
     target_height: Optional[int],
     target_dr: str,
     outcome: str,
+    *,
+    latency_ms: Optional[float] = None,
 ) -> None:
     if not ADAPTIVE_LEARNING_ENABLED:
         return
@@ -520,11 +538,20 @@ def adaptive_record_candidate(
         },
     )
     row[safe_outcome] = int(row.get(safe_outcome, 0)) + 1
+    recent = row.setdefault("recent_outcomes", [])
+    if isinstance(recent, list):
+        recent.append(safe_outcome)
+        del recent[:-ADAPTIVE_RECENT_OUTCOME_LIMIT]
+    if latency_ms is not None:
+        _record_latency(row.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), latency_ms)
     save_adaptive_learning(data)
 
 
 def adaptive_preferred_height(family: str, source_height: Optional[int], source_dr: str) -> Optional[int]:
+    family = safe_client_family(family)
     if not (ADAPTIVE_LEARNING_ENABLED and source_height is not None):
+        return None
+    if family == "unknown":
         return None
     source_drc = classify_dynamic_range(source_dr)
     data = load_adaptive_learning()
@@ -537,16 +564,39 @@ def adaptive_preferred_height(family: str, source_height: Optional[int], source_
             if str(row.get("source_dynamic_range", "")).upper() != source_drc:
                 continue
             target_height = int(row.get("target_height"))
+            if target_height >= int(source_height) or target_height < WATERFALL_MIN_HEIGHT:
+                continue
             attempts = int(row.get("downshift_sent", 0)) + int(row.get("shadow_candidates", 0))
             successes = int(row.get("success", 0))
             continued = int(row.get("continued_transcode", 0))
             abandoned = int(row.get("abandonment", 0))
-            observed = successes + continued + abandoned
+            other_failures = sum(
+                int(row.get(name, 0)) for name in ADAPTIVE_BLOCKING_OUTCOMES if name not in {"continued_transcode", "abandonment"}
+            )
+            observed = successes + continued + abandoned + other_failures
             samples = observed if observed > 0 else attempts
             if samples < ADAPTIVE_MIN_SAMPLES:
                 continue
             confidence = max(0.0, successes / max(1, observed)) if observed > 0 else 0.0
             if confidence < ADAPTIVE_CONFIDENCE_MIN:
+                continue
+            recent = row.get("recent_outcomes", [])
+            if isinstance(recent, list) and any(str(v) in ADAPTIVE_BLOCKING_OUTCOMES for v in recent[-ADAPTIVE_RECENT_OUTCOME_LIMIT:]):
+                continue
+            if any(int(row.get(name, 0)) > 0 for name in ("boundary_ambiguous", "edition_mismatch", "version_mismatch")):
+                continue
+            latency = row.get("latency_ms", {})
+            p95 = None
+            if isinstance(latency, dict):
+                try:
+                    p95 = float(latency.get("p95"))
+                except (TypeError, ValueError):
+                    samples_list = latency.get("samples")
+                    if isinstance(samples_list, list) and samples_list:
+                        ordered = sorted(float(v) for v in samples_list)
+                        idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95 + 0.999999)))
+                        p95 = ordered[idx]
+            if p95 is None or p95 >= ADAPTIVE_MAX_P95_MS:
                 continue
             candidate = (confidence, samples, target_height)
             if best is None or candidate > best:
@@ -554,6 +604,43 @@ def adaptive_preferred_height(family: str, source_height: Optional[int], source_
         except Exception:
             continue
     return best[2] if best is not None else None
+
+
+def record_adaptive_observation_from_event(ev: "InputEvent") -> bool:
+    """Record a sanitized aggregate outcome event and return True if handled.
+
+    This supports Tautulli outcome hooks without touching Plex. It intentionally
+    accepts only coarse client-family/media-risk fields and rejects identifiers.
+    """
+    if not ev.adaptive_outcome:
+        return False
+    outcome = re.sub(r"[^a-z0-9_.-]+", "_", ev.adaptive_outcome.lower()).strip("_")
+    if outcome not in {"success", "continued_transcode", "abandonment", "playback_failure", "downshift_failed"}:
+        log_event("WARNING", f"Unsupported adaptive outcome ignored: {outcome}", ev=ev)
+        return True
+    family = safe_client_family(ev.client_family or "")
+    if family == "unknown":
+        log_event("WARNING", "Adaptive outcome ignored for unknown client family.", ev=ev)
+        return True
+    source_height = parse_resolution_hint(ev.video_resolution or ev.stream_video_resolution)
+    target_height = parse_resolution_hint(ev.target_video_resolution)
+    if source_height is None or target_height is None:
+        log_event("WARNING", "Adaptive outcome ignored because source/target height is missing.", ev=ev)
+        return True
+    latency_ms = ev.decision_latency_ms
+    if latency_ms is not None:
+        latency_ms = max(0.0, min(float(latency_ms), 10_000.0))
+    adaptive_record_candidate(
+        family,
+        source_height,
+        ev.video_dynamic_range or "UNKNOWN",
+        target_height,
+        ev.target_video_dynamic_range or "UNKNOWN",
+        outcome,
+        latency_ms=latency_ms,
+    )
+    record_telemetry(outcome, ev, None, latency_ms=latency_ms)
+    return True
 
 
 # -------------------------
@@ -574,6 +661,14 @@ class InputEvent:
     video_dynamic_range: Optional[str] = None
     # Optional: name of the trigger/action (if you pass it)
     action: Optional[str] = None
+    # Optional sanitized adaptive-outcome ingestion. This path is intended for
+    # Tautulli Playback Stop/Decision Change hooks after a prior shadow/write
+    # decision and must not carry raw session/user/device identifiers.
+    adaptive_outcome: Optional[str] = None
+    client_family: Optional[str] = None
+    target_video_resolution: Optional[str] = None
+    target_video_dynamic_range: Optional[str] = None
+    decision_latency_ms: Optional[float] = None
 
 
 @dataclass
@@ -1362,6 +1457,24 @@ def parse_args(argv: List[str]) -> InputEvent:
                 ev.video_dynamic_range = val
             elif key in ("action", "trigger", "event"):
                 ev.action = val
+            elif key in ("adaptive_outcome", "adaptiveoutcome", "outcome"):
+                ev.adaptive_outcome = val
+            elif key in ("client_family", "clientfamily"):
+                ev.client_family = val
+            elif key in ("target_video_resolution", "targetvideoresolution", "target_resolution", "targetresolution"):
+                ev.target_video_resolution = val
+            elif key in (
+                "target_video_dynamic_range",
+                "targetvideodynamicrange",
+                "target_dynamic_range",
+                "targetdynamicrange",
+            ):
+                ev.target_video_dynamic_range = val
+            elif key in ("decision_latency_ms", "decisionlatencyms"):
+                try:
+                    ev.decision_latency_ms = float(val) if val is not None else None
+                except (TypeError, ValueError):
+                    ev.decision_latency_ms = None
 
             i += 1
 
@@ -1410,6 +1523,9 @@ def main(argv: List[str]) -> int:
     ev = parse_args(argv)
 
     log.info("Trigger: %s", sanitized_event_context(ev, None))
+
+    if record_adaptive_observation_from_event(ev):
+        return 0
 
     # User exemptions
     if ev.username and ev.username in EXEMPT_USERS:
@@ -1479,8 +1595,17 @@ def main(argv: List[str]) -> int:
     target_dr = media_dynamic_range(target_media) if target_media is not None else "UNKNOWN"
 
     if SHADOW_MODE:
-        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "shadow_candidates")
-        record_telemetry("shadow_downshift_candidate", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
+        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
+        adaptive_record_candidate(
+            client_family,
+            cur_h,
+            cur_dr,
+            target_h,
+            target_dr,
+            "shadow_candidates",
+            latency_ms=elapsed_ms,
+        )
+        record_telemetry("shadow_downshift_candidate", ev, ctx, latency_ms=elapsed_ms)
         log_event(
             "INFO",
             "%s shadow candidate: mediaIndex=%s offset_ms=%s"
@@ -1533,14 +1658,16 @@ def main(argv: List[str]) -> int:
                     log.debug("seekTo attempt %s failed: %s", attempt, e)
                     time.sleep(SEEK_RETRY_DELAY_S)
 
-        record_telemetry("downshift_sent", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
-        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_sent")
+        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
+        record_telemetry("downshift_sent", ev, ctx, latency_ms=elapsed_ms)
+        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_sent", latency_ms=elapsed_ms)
         log_event("INFO", "Downshift command sent successfully.", ev=ev, ctx=ctx)
         return 0
 
     except Exception as e:
-        record_telemetry("downshift_failed", ev, ctx, latency_ms=(time.monotonic() - start_ts) * 1000.0)
-        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_failed")
+        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
+        record_telemetry("downshift_failed", ev, ctx, latency_ms=elapsed_ms)
+        adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_failed", latency_ms=elapsed_ms)
         log_event("ERROR", "Downshift failed: %s" % e, ev=ev, ctx=ctx)
         if KILL_ON_SWITCH_FAIL:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_SWITCH_FAIL)

@@ -141,6 +141,7 @@ Example:
   "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
   "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
   "VERSION_INDEX_FILE": "/var/lib/downshiftarr/cache/plex-version-index.json",
+  "ALLOW_LIVE_LOOKUP_ON_INDEX_MISS": true,
   "VERSION_INDEX_MAX_AGE_S": 900,
   "DECISION_BUDGET_MS": 100,
   "TELEMETRY_FILE": "/var/lib/downshiftarr/cache/plex-transcoder-telemetry.json",
@@ -159,6 +160,7 @@ Key settings youâ€™ll care about first:
 - `PLEX_TOKEN_FILE` â€“ optional absolute path to a root-owned token file readable by the Plex service user. This is preferred when Plex does not provide `X_PLEX_TOKEN` to spawned transcodes because it keeps the token out of argv, examples, and process environment. The file must be regular, non-symlinked, not group/other writable, not other-readable, and owned by root or the Plex service user.
 - `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens through `PLEX_TOKEN_FILE` or, when Plex supplies one, `X_PLEX_TOKEN`/`PLEX_TOKEN`/`PLEX_USER_TOKEN` process environment.
 - `VERSION_INDEX_FILE` â€“ optional precomputed Plex version index. When present, the shim checks it before live Plex search/section scans so first-segment decisions stay fast.
+- `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS` - default `true`; if a hot index misses, the shim may use a bounded live Plex lookup inside the same 100 ms decision budget before passing through.
 - `VERSION_INDEX_MAX_AGE_S` - optional freshness limit for indexes that include `generated_at_epoch`; stale indexes are ignored and reported in telemetry.
 - `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget and passes through rather than making clients wait.
 - `MAX_CACHE_BYTES` - default `1000000`; oversized hot-path cache files are ignored and reported instead of delaying first-segment startup.
@@ -357,10 +359,11 @@ A complete example file is included as `Downshiftarr.env.example`.
 | `ENFORCEMENT_MODE` | `targeted` | Use `shadow` for observation-only evaluation before active enforcement |
 | `SHADOW_MODE` | `0` | Records candidates without changing playback when enabled |
 | `TELEMETRY_FILE` | blank | Optional sanitized aggregate counters and latency summaries |
-| `ADAPTIVE_LEARNING_ENABLED` | `0` | Enables shadow-first learned fallback preferences from sanitized aggregate outcomes |
+| `ADAPTIVE_LEARNING_ENABLED` | `0` | Enables conservative learned fallback preferences from sanitized aggregate outcomes |
 | `ADAPTIVE_LEARNING_FILE` | blank | Root/private aggregate state file for learned fallback candidates |
-| `ADAPTIVE_MIN_SAMPLES` | `5` | Minimum outcome count before a learned rule can be promoted |
-| `ADAPTIVE_CONFIDENCE_MIN` | `0.80` | Minimum success confidence before a learned fallback height is preferred |
+| `ADAPTIVE_MIN_SAMPLES` | `30` | Minimum outcome count before a learned rule can be promoted |
+| `ADAPTIVE_CONFIDENCE_MIN` | `0.95` | Minimum success confidence before a learned fallback height is preferred |
+| `ADAPTIVE_MAX_P95_MS` | `75` | Maximum p95 decision latency for a learned rule to be promoted |
 | `AUTO_WATERFALL_ON_CONTINUED_TRANSCODE` | `1` | Continue downshifting lower versions when the client still video-transcodes |
 | `WATERFALL_MIN_HEIGHT` | `360` | Lowest height the waterfall should try |
 

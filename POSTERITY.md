@@ -153,3 +153,10 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Improved fallback scoring in both `Downshiftarr.py` and the Plex Transcoder shim so equal-height fallback candidates prefer broadly compatible audio and subtitle tracks, reducing forced audio transcodes and subtitle burn-in risk.
 - Added per-client-family p50/p95 latency telemetry and cache-oversize fail-open handling to the shim.
 - Added `scripts/testing/emulator_lab.py` and tests. The ignored local lab now contains a portable Android SDK/JDK setup with AVDs for Android mobile, Android tablet, Android TV, and Google TV. Samsung Tizen and LG webOS official emulator tooling remains documented as unavailable through the current unattended Windows package path; Apple simulators require macOS/Xcode; Roku and console retail Plex behavior requires physical hardware or synthetic proof.
+
+## 2026-05-29 Downshift-First Conservative Promotion Follow-Up
+
+- Q: Should Downshiftarr prefer downshift over pass-through when the hot version index misses? A: Yes, but only inside the existing 100 ms shim budget and only when Plex proves a lower compatible Version of the same item/release/edition.
+- Q: Should adaptive learning promote rules automatically? A: Yes, but only by sanitized client family after at least 30 observations, 95% or better success, no recent playback/downshift failures, no version/edition ambiguity, and p95 decision latency below 75 ms.
+- The Plex Transcoder shim now exposes `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS`, records `live_lookup_waterfall_swap` telemetry, uses bounded live Plex lookup after an index miss, skips extra metadata fetches when the version index already carries enough sibling `Media` metadata, and passes through if the decision budget expires even when strict unsure-kill is enabled.
+- `Downshiftarr.py` now treats adaptive promotion as aggregate-only trust data. It rejects unknown-family promotion, records candidate latency/recent outcomes, supports sanitized adaptive outcome ingestion for Tautulli hooks, and keeps raw usernames, tokens, IPs, rating keys, machine identifiers, session ids, device ids, and timelines out of durable state.

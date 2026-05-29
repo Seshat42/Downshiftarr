@@ -91,9 +91,9 @@ PLEX_TOKEN_FILE: str = ""
 
 # Environment variables to check for a token if PLEX_TOKEN is blank.
 PLEX_TOKEN_ENV_VARS: Tuple[str, ...] = (
-    "X_PLEX_TOKEN",            # commonly present
-    "PLEX_TOKEN",              # sometimes present
-    "PLEX_CLAIM_TOKEN",        # harmless to try
+    "X_PLEX_TOKEN",  # commonly present
+    "PLEX_TOKEN",  # sometimes present
+    "PLEX_CLAIM_TOKEN",  # harmless to try
 )
 
 # Network timeout for Plex API calls (seconds). Keep this small to avoid delaying playback.
@@ -122,6 +122,11 @@ SECTION_SCAN_MAX_ITEMS: int = 1000
 # Optional hot-path version index. When present, this avoids synchronous Plex
 # search/section scans during the first transcode segment.
 VERSION_INDEX_FILE: str = "/var/lib/downshiftarr/cache/plex-version-index.json"
+
+# When the hot index misses, allow a bounded live Plex lookup inside the same
+# decision budget before passing through. This is the downshift-first safety net:
+# it may only swap after Plex proves a lower compatible Version of the same item.
+ALLOW_LIVE_LOOKUP_ON_INDEX_MISS: bool = True
 
 # Reject stale hot-path indexes when they carry generation metadata. Missing
 # generation metadata remains usable for backward compatibility but is reported.
@@ -252,8 +257,18 @@ _ACTIVE_DECISION_START_MS: Optional[float] = None
 
 # Video file extensions used to identify the primary "-i <file>" input.
 VIDEO_EXTENSIONS: Tuple[str, ...] = (
-    ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv",
-    ".ts", ".flv", ".webm", ".3gp", ".mpeg", ".mpg",
+    ".mkv",
+    ".mp4",
+    ".m4v",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".ts",
+    ".flv",
+    ".webm",
+    ".3gp",
+    ".mpeg",
+    ".mpg",
 )
 
 
@@ -275,6 +290,7 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "ENABLE_SECTION_SCAN_FALLBACK": bool,
     "SECTION_SCAN_MAX_ITEMS": int,
     "VERSION_INDEX_FILE": str,
+    "ALLOW_LIVE_LOOKUP_ON_INDEX_MISS": bool,
     "VERSION_INDEX_MAX_AGE_S": int,
     "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
     "SKIP_WHEN_VIDEO_CODEC_COPY": bool,
@@ -482,6 +498,11 @@ def remaining_decision_budget_s() -> Optional[float]:
     return max(0.0, remaining_ms / 1000.0)
 
 
+def active_decision_budget_exhausted() -> bool:
+    remaining = remaining_decision_budget_s()
+    return remaining is not None and remaining <= 0
+
+
 def safe_client_family(value: object = "") -> str:
     raw = str(value or "").lower()
     if "roku" in raw:
@@ -516,6 +537,10 @@ def safe_client_family(value: object = "") -> str:
         return "plex_web"
     if "htpc" in raw or "desktop" in raw:
         return "desktop"
+    if "windows" in raw or "macos" in raw or "linux" in raw:
+        return "desktop"
+    if "vizio" in raw or "vidaa" in raw or "hisense" in raw or "smart tv" in raw:
+        return "smart_tv"
     return "unknown"
 
 
@@ -1073,6 +1098,7 @@ def _save_cache(entries: Dict[str, CacheEntry]) -> None:
         except Exception:
             pass
 
+
 # =====================================================================================
 # Plex lookup: (file path) -> (library item) -> (fallback file)
 # =====================================================================================
@@ -1145,6 +1171,8 @@ def _section_all_params(section: dict) -> Dict[str, str]:
 def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, dict]]:
     if not ENABLE_SECTION_SCAN_FALLBACK:
         return None
+    if active_decision_budget_exhausted():
+        return None
     sections = plex_get_json("/library/sections", params={})
     if not sections:
         return None
@@ -1154,6 +1182,8 @@ def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, d
         if _section_matches_file_path(section, file_path)
     ]
     for section in candidates:
+        if active_decision_budget_exhausted():
+            return None
         key = section.get("key")
         if not key:
             continue
@@ -1162,6 +1192,8 @@ def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, d
             continue
         checked = 0
         for item in _iter_metadata_items(data):
+            if active_decision_budget_exhausted():
+                return None
             checked += 1
             if checked > SECTION_SCAN_MAX_ITEMS:
                 break
@@ -1217,6 +1249,11 @@ def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
     indexed = plex_find_item_by_file_via_version_index(file_path)
     if indexed:
         return indexed
+    if VERSION_INDEX_LAST_STATUS == "miss" and not ALLOW_LIVE_LOOKUP_ON_INDEX_MISS:
+        log("DEBUG", "Version index miss and live lookup is disabled; passing through")
+        return None
+    if active_decision_budget_exhausted():
+        return None
 
     # The Plex search API expects a query string; using the basename keeps it fast.
     # We also try a "title-ish" cleaned basename as a second attempt.
@@ -1232,6 +1269,8 @@ def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
 
     for query in query_candidates:
         for endpoint in PLEX_SEARCH_ENDPOINTS:
+            if active_decision_budget_exhausted():
+                return None
             params = {
                 "query": query,
                 "limit": str(PLEX_SEARCH_LIMIT_PER_HUB),
@@ -1241,6 +1280,8 @@ def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
                 continue
 
             for item in _iter_hub_items(data):
+                if active_decision_budget_exhausted():
+                    return None
                 rk = item.get("ratingKey")
                 if not rk:
                     continue
@@ -1499,20 +1540,15 @@ def rewrite_args_for_performance(
         if swapped_to_sdr and input_value_index >= 0 and i < input_value_index:
             if a == "-codec" or a.startswith("-codec:") or a.startswith("-eae_prefix:"):
                 if i + 1 < len(args):
-                    log("DEBUG", f"Optimization: removed stale input hint {a} {args[i+1]}")
+                    log("DEBUG", f"Optimization: removed stale input hint {a} {args[i + 1]}")
                     i += 2
                     continue
 
         # Bitrate limit stripping: only after the input, so we don't touch decoder hints.
         if REMOVE_BITRATE_LIMITS and input_value_index >= 0 and i > input_value_index:
-            if (
-                a in ("-b", "-b:v", "-maxrate", "-bufsize")
-                or a.startswith("-b:")
-                or a.startswith("-maxrate:")
-                or a.startswith("-bufsize:")
-            ):
+            if a in ("-b", "-b:v", "-maxrate", "-bufsize") or a.startswith("-b:") or a.startswith("-maxrate:") or a.startswith("-bufsize:"):
                 if i + 1 < len(args):
-                    log("DEBUG", f"Optimization: removed bitrate option {a} {args[i+1]}")
+                    log("DEBUG", f"Optimization: removed bitrate option {a} {args[i + 1]}")
                     i += 2
                     continue
 
@@ -1624,7 +1660,7 @@ def main() -> None:
                 else:
                     log("INFO", f"Cache hit: swapping input -> {os.path.basename(ce.fallback_file)}")
                     args[input_idx] = ce.fallback_file
-                    swapped_to_sdr = (classify_dynamic_range(ce.fallback_dr) == "SDR")
+                    swapped_to_sdr = classify_dynamic_range(ce.fallback_dr) == "SDR"
                     final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
                     record_telemetry("cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
                     exec_real_transcoder(real, final_args)
@@ -1632,7 +1668,7 @@ def main() -> None:
             else:
                 log("INFO", f"Cache hit: swapping input -> {os.path.basename(ce.fallback_file)}")
                 args[input_idx] = ce.fallback_file
-                swapped_to_sdr = (classify_dynamic_range(ce.fallback_dr) == "SDR")
+                swapped_to_sdr = classify_dynamic_range(ce.fallback_dr) == "SDR"
                 final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
                 record_telemetry("cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
                 exec_real_transcoder(real, final_args)
@@ -1646,6 +1682,11 @@ def main() -> None:
 
     # Lookup item by file path.
     found = plex_find_item_by_file(input_file)
+    if budget_exhausted(decision_start_ms):
+        log("WARNING", f"Decision budget exhausted during Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
+        record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        exec_real_transcoder(real, args)
+        return
     if not found:
         log("WARNING", f"Plex lookup failed for input file: {input_file}")
         record_telemetry("lookup_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
@@ -1684,7 +1725,16 @@ def main() -> None:
         return
 
     # Fetch full metadata (streams / dynamic range). This is what makes swap decisions accurate.
-    full_item = plex_fetch_full_metadata(rating_key)
+    full_item = None
+    if len(_as_list(search_item.get("Media"))) > 1 and find_current_media(search_item, input_file):
+        full_item = search_item
+    else:
+        full_item = plex_fetch_full_metadata(rating_key)
+    if budget_exhausted(decision_start_ms):
+        log("WARNING", f"Decision budget exhausted during full metadata fetch; passing through budget_ms={DECISION_BUDGET_MS}")
+        record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        exec_real_transcoder(real, args)
+        return
     if not full_item:
         log("WARNING", f"Could not fetch full metadata for ratingKey={rating_key}")
         record_telemetry("metadata_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
@@ -1756,11 +1806,12 @@ def main() -> None:
 
     # Swap input to the fallback file.
     args[input_idx] = fallback.file_path
-    swapped_to_sdr = (fallback.dyn_range_class == "SDR")
+    swapped_to_sdr = fallback.dyn_range_class == "SDR"
 
+    outcome = "live_lookup_waterfall_swap" if VERSION_INDEX_LAST_STATUS != "hit" else "waterfall_swap"
     log(
         "INFO",
-        f"Waterfall swap: {current.height}p/{current.dyn_range_class} -> {fallback.height}p/{fallback.dyn_range_class} "
+        f"{outcome}: {current.height}p/{current.dyn_range_class} -> {fallback.height}p/{fallback.dyn_range_class} "
         f"({os.path.basename(fallback.file_path)})",
     )
 
@@ -1779,7 +1830,7 @@ def main() -> None:
 
     # Rewrite args for performance and exec.
     final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
-    record_telemetry("waterfall_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+    record_telemetry(outcome, elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
     exec_real_transcoder(real, final_args)
 
 

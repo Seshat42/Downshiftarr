@@ -124,12 +124,14 @@ SECTION_SCAN_MAX_ITEMS: int = 1000
 VERSION_INDEX_FILE: str = "/var/lib/downshiftarr/cache/plex-version-index.json"
 
 # When the hot index misses, allow a bounded live Plex lookup inside the same
-# decision budget before passing through. This is the downshift-first safety net:
-# it may only swap after Plex proves a lower compatible Version of the same item.
+# decision budget for non-4K continued-transcode diagnostics. 4K transcode
+# enforcement is stricter: it requires the fresh version index and never relies
+# on slower live lookup as the proof source.
 ALLOW_LIVE_LOOKUP_ON_INDEX_MISS: bool = True
 
-# Reject stale hot-path indexes when they carry generation metadata. Missing
-# generation metadata remains usable for backward compatibility but is reported.
+# Reject stale hot-path indexes. A generated timestamp is mandatory because the
+# 4K no-transcode invariant depends on fresh same-item/same-edition version
+# proof, not an old cache file.
 VERSION_INDEX_MAX_AGE_S: int = 15 * 60
 VERSION_INDEX_LAST_STATUS: str = "not_checked"
 
@@ -191,6 +193,12 @@ WATERFALL_MIN_HEIGHT: int = 360
 #   True  => exit non-zero to prevent the transcode from starting (strict compliance)
 #   False => fall back to passing through to the real transcoder
 KILL_TRANSCODE_IF_NO_FALLBACK: bool = True
+
+# Hard production invariant: Plex must never transcode a 4K source. If a 4K
+# streaming transcode starts, the shim must immediately use a fresh verified
+# Plex Versions index to swap lower or block the transcode.
+FOUR_K_TRANSCODE_ALLOWED: bool = False
+REQUIRE_FRESH_INDEX_FOR_4K: bool = True
 
 # When we cannot even determine whether the input is protected (API/search failure):
 #   True  => fail closed for streaming transcodes (maximum compliance)
@@ -304,6 +312,8 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "AUTO_WATERFALL_ON_CONTINUED_TRANSCODE": bool,
     "WATERFALL_MIN_HEIGHT": int,
     "KILL_TRANSCODE_IF_NO_FALLBACK": bool,
+    "FOUR_K_TRANSCODE_ALLOWED": bool,
+    "REQUIRE_FRESH_INDEX_FOR_4K": bool,
     "KILL_TRANSCODE_IF_UNSURE": bool,
     "STRIP_HDR_TONEMAP_FILTERS": bool,
     "REMOVE_BITRATE_LIMITS": bool,
@@ -614,6 +624,16 @@ def record_telemetry(
         pass
 
 
+def block_4k_transcode(reason: str, decision_start_ms: float) -> None:
+    log("ERROR", f"Policy: blocking 4K transcode ({reason}); verified lower Plex Version is required")
+    record_telemetry(
+        "blocked_4k_transcode",
+        elapsed_ms=monotonic_ms() - decision_start_ms,
+        index_status=VERSION_INDEX_LAST_STATUS,
+    )
+    sys.exit(1)
+
+
 # =====================================================================================
 # Helpers: Plex HTTP
 # =====================================================================================
@@ -714,6 +734,24 @@ def parse_resolution_hint(v) -> Optional[int]:
         n = int(s)
         return n if n > 0 else None
     return None
+
+
+def file_path_height_hint(file_path: str) -> Optional[int]:
+    """Infer obvious resolution tokens from a media path without Plex metadata."""
+    name = os.path.basename(str(file_path or "")).lower()
+    if not name:
+        return None
+    if re.search(r"(?<![a-z0-9])(4k|uhd)(?![a-z0-9])", name):
+        return 2160
+    match = re.search(r"(?<!\d)(4320|2160|1440|1080|720|576|480|360)p?(?!\d)", name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def file_path_looks_4k(file_path: str) -> bool:
+    height = file_path_height_hint(file_path)
+    return height is not None and height >= MAX_ALLOWED_HEIGHT
 
 
 def media_height(media: dict) -> Optional[int]:
@@ -1227,8 +1265,15 @@ def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[s
         VERSION_INDEX_LAST_STATUS = "empty"
         return None
     generated = safe_int(data.get("generated_at_epoch"))
-    if generated is not None and VERSION_INDEX_MAX_AGE_S > 0:
-        if (time.time() - generated) > VERSION_INDEX_MAX_AGE_S:
+    if VERSION_INDEX_MAX_AGE_S > 0:
+        if generated is None:
+            VERSION_INDEX_LAST_STATUS = "missing_generated_at"
+            return None
+        age = time.time() - generated
+        if age < 0:
+            VERSION_INDEX_LAST_STATUS = "future_generated_at"
+            return None
+        if age > VERSION_INDEX_MAX_AGE_S:
             VERSION_INDEX_LAST_STATUS = "stale"
             return None
     for item in items:
@@ -1646,9 +1691,16 @@ def main() -> None:
 
     # Parse required input stream indices from the args (for safe swapping).
     req_stream_max = required_max_input_stream_index(args)
+    input_looks_4k = file_path_looks_4k(input_file)
+    preverified_index_found: Optional[Tuple[str, dict]] = None
+
+    if input_looks_4k and (not FOUR_K_TRANSCODE_ALLOWED) and REQUIRE_FRESH_INDEX_FOR_4K:
+        preverified_index_found = plex_find_item_by_file_via_version_index(input_file)
+        if not preverified_index_found:
+            block_4k_transcode(f"fresh version index unavailable: {VERSION_INDEX_LAST_STATUS}", decision_start_ms)
 
     # Cache fast-path.
-    if ENABLE_CACHE:
+    if ENABLE_CACHE and not (input_looks_4k and REQUIRE_FRESH_INDEX_FOR_4K):
         cache = _load_cache()
         ce = cache.get(input_file)
         if ce and ce.fallback_file:
@@ -1677,19 +1729,25 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted before Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("decision budget exhausted before lookup", decision_start_ms)
         exec_real_transcoder(real, args)
         return
 
     # Lookup item by file path.
-    found = plex_find_item_by_file(input_file)
+    found = preverified_index_found or plex_find_item_by_file(input_file)
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted during Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("decision budget exhausted during lookup", decision_start_ms)
         exec_real_transcoder(real, args)
         return
     if not found:
         log("WARNING", f"Plex lookup failed for input file: {input_file}")
         record_telemetry("lookup_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("lookup uncertain", decision_start_ms)
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1700,6 +1758,8 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted after Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("decision budget exhausted after lookup", decision_start_ms)
         exec_real_transcoder(real, args)
         return
 
@@ -1721,6 +1781,8 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted before full metadata; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("decision budget exhausted before metadata", decision_start_ms)
         exec_real_transcoder(real, args)
         return
 
@@ -1733,11 +1795,15 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted during full metadata fetch; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("decision budget exhausted during metadata", decision_start_ms)
         exec_real_transcoder(real, args)
         return
     if not full_item:
         log("WARNING", f"Could not fetch full metadata for ratingKey={rating_key}")
         record_telemetry("metadata_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("metadata unavailable", decision_start_ms)
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1748,6 +1814,8 @@ def main() -> None:
     if not current:
         log("WARNING", "Could not match current media in full metadata")
         record_telemetry("current_media_miss", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("current 4K media not verified", decision_start_ms)
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1755,6 +1823,9 @@ def main() -> None:
         return
 
     protected = is_protected_source(current)
+    current_is_4k = current.height is not None and current.height >= MAX_ALLOWED_HEIGHT
+    if current_is_4k and (not FOUR_K_TRANSCODE_ALLOWED) and REQUIRE_FRESH_INDEX_FOR_4K and VERSION_INDEX_LAST_STATUS != "hit":
+        block_4k_transcode(f"fresh version index required, status={VERSION_INDEX_LAST_STATUS}", decision_start_ms)
     if (not protected) and (current.dyn_range_class == "UNKNOWN") and args_indicate_hdr_tonemap(args):
         # Plex is tonemapping, so treat the source as HDR even if metadata didn't say so.
         protected = True
@@ -1768,6 +1839,8 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted before fallback selection; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if (input_looks_4k or current_is_4k) and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("decision budget exhausted before fallback selection", decision_start_ms)
         exec_real_transcoder(real, args)
         return
 
@@ -1788,13 +1861,15 @@ def main() -> None:
     if not fallback:
         log("WARNING", "No compliant fallback version found (or none passed stream safety checks)")
         record_telemetry("no_fallback", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        if current_is_4k and not FOUR_K_TRANSCODE_ALLOWED:
+            block_4k_transcode("no verified lower fallback", decision_start_ms)
         if protected and KILL_TRANSCODE_IF_NO_FALLBACK:
             log("ERROR", "Policy: killing protected transcode (KILL_TRANSCODE_IF_NO_FALLBACK=1)")
             sys.exit(1)
         exec_real_transcoder(real, args)
         return
 
-    if SHADOW_MODE:
+    if SHADOW_MODE and not (current_is_4k and not FOUR_K_TRANSCODE_ALLOWED):
         log(
             "INFO",
             f"Shadow mode: would waterfall swap {current.height}p/{current.dyn_range_class} -> "
@@ -1803,6 +1878,8 @@ def main() -> None:
         record_telemetry("shadow_swap_candidate", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         exec_real_transcoder(real, args)
         return
+    if SHADOW_MODE and current_is_4k and not FOUR_K_TRANSCODE_ALLOWED:
+        log("WARNING", "Shadow mode overridden because 4K transcode is not allowed")
 
     # Swap input to the fallback file.
     args[input_idx] = fallback.file_path

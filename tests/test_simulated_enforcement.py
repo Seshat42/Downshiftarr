@@ -288,6 +288,32 @@ def test_every_video_client_profile_no_fallback_terminates_fail_closed(profile, 
     assert terminations == [Downshiftarr.KILL_MESSAGE_NO_FALLBACK_MEDIA]
 
 
+def test_4k_no_fallback_terminates_even_when_no_fallback_kill_disabled(monkeypatch):
+    session = protected_session()
+    session.media = [media("current-4k-hdr", 2160, "HDR", selected=True)]
+    plex = FakePlexServer(sessions=[session], clients=[FakeClient(machine_identifier="client-plex-web-chrome")])
+    monkeypatch.setattr(Downshiftarr, "KILL_ON_NO_FALLBACK_MEDIA", False)
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    assert code == 0
+    assert terminations == [Downshiftarr.KILL_MESSAGE_NO_FALLBACK_MEDIA]
+
+
+def test_shadow_mode_does_not_allow_4k_transcode_passthrough(monkeypatch):
+    session = protected_session()
+    client = FakeClient(machine_identifier="client-plex-web-chrome")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+    monkeypatch.setattr(Downshiftarr, "SHADOW_MODE", True)
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    assert code == 0
+    assert terminations == []
+    assert client.play_calls
+    assert client.play_calls[0]["mediaIndex"] == 1
+
+
 @pytest.mark.parametrize("profile", video_capable_profiles(), ids=lambda p: p.name)
 def test_every_video_client_profile_missing_client_terminates_fail_closed(profile, monkeypatch):
     session = protected_session(profile=profile, machine_identifier=profile.machine_identifier)
@@ -451,6 +477,7 @@ def test_shadow_mode_records_candidate_without_remote_control(monkeypatch, tmp_p
 
     path = tmp_path / "telemetry" / "downshiftarr.json"
     session = protected_session(machine_identifier="client-plex-web")
+    session.media = [media("current-1080-hdr", 1080, "HDR", selected=True), media("fallback-720-sdr", 720, "SDR")]
     client = FakeClient(machine_identifier="client-plex-web")
     plex = FakePlexServer(sessions=[session], clients=[client])
 
@@ -473,6 +500,7 @@ def test_adaptive_learning_records_sanitized_shadow_candidate(monkeypatch, tmp_p
     path = tmp_path / "learning" / "adaptive.json"
     profile = next(p for p in CLIENT_PROFILES if p.name == "roku")
     session = protected_session(profile=profile, machine_identifier=profile.machine_identifier, view_offset=9876)
+    session.media = [media("current-1080-hdr", 1080, "HDR", selected=True), media("fallback-720-sdr", 720, "SDR")]
     client = FakeClient(machine_identifier=profile.machine_identifier)
     plex = FakePlexServer(sessions=[session], clients=[client])
 
@@ -488,8 +516,8 @@ def test_adaptive_learning_records_sanitized_shadow_candidate(monkeypatch, tmp_p
     assert terminations == []
     assert client.play_calls == []
     assert data["version"] == 1
-    assert data["client_families"]["roku"]["candidates"]["2160_HDR_to_1080_SDR"]["shadow_candidates"] == 1
-    assert data["client_families"]["roku"]["candidates"]["2160_HDR_to_1080_SDR"]["target_height"] == 1080
+    assert data["client_families"]["roku"]["candidates"]["1080_HDR_to_720_SDR"]["shadow_candidates"] == 1
+    assert data["client_families"]["roku"]["candidates"]["1080_HDR_to_720_SDR"]["target_height"] == 720
     assert profile.machine_identifier not in text
     assert "Downshiftarr Test User" not in text
     assert "9876" not in text

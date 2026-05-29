@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "downshiftarr"
-version = "0.7.2"
+version = "0.7.3"
 description = "Plex 4K/HDR/DV transcode guard driven by Tautulli and optional Plex Transcoder shim."
 readme = "README.md"
 requires-python = ">=3.10"

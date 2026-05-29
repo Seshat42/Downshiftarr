@@ -143,6 +143,8 @@ Example:
   "VERSION_INDEX_FILE": "/var/lib/downshiftarr/cache/plex-version-index.json",
   "ALLOW_LIVE_LOOKUP_ON_INDEX_MISS": true,
   "VERSION_INDEX_MAX_AGE_S": 900,
+  "FOUR_K_TRANSCODE_ALLOWED": false,
+  "REQUIRE_FRESH_INDEX_FOR_4K": true,
   "DECISION_BUDGET_MS": 100,
   "TELEMETRY_FILE": "/var/lib/downshiftarr/cache/plex-transcoder-telemetry.json",
   "TELEMETRY_ENABLED": true,
@@ -159,14 +161,16 @@ Key settings youâ€™ll care about first:
 - `PLEX_URL` â€“ usually `http://127.0.0.1:32400` inside the Plex container/host.
 - `PLEX_TOKEN_FILE` â€“ optional absolute path to a root-owned token file readable by the Plex service user. This is preferred when Plex does not provide `X_PLEX_TOKEN` to spawned transcodes because it keeps the token out of argv, examples, and process environment. The file must be regular, non-symlinked, not group/other writable, not other-readable, and owned by root or the Plex service user.
 - `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens through `PLEX_TOKEN_FILE` or, when Plex supplies one, `X_PLEX_TOKEN`/`PLEX_TOKEN`/`PLEX_USER_TOKEN` process environment.
-- `VERSION_INDEX_FILE` â€“ optional precomputed Plex version index. When present, the shim checks it before live Plex search/section scans so first-segment decisions stay fast.
-- `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS` - default `true`; if a hot index misses, the shim may use a bounded live Plex lookup inside the same 100 ms decision budget before passing through.
-- `VERSION_INDEX_MAX_AGE_S` - optional freshness limit for indexes that include `generated_at_epoch`; stale indexes are ignored and reported in telemetry.
-- `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget and passes through rather than making clients wait.
+- `VERSION_INDEX_FILE` - required for production 4K enforcement. The shim checks the precomputed Plex Versions index before live Plex search/section scans so first-segment decisions stay fast.
+- `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS` - default `true`; non-4K continued-transcode diagnostics may use a bounded live Plex lookup inside the same 100 ms decision budget. 4K decisions do not rely on this path.
+- `VERSION_INDEX_MAX_AGE_S` - freshness limit for indexes. Production indexes must include `generated_at_epoch`; stale, future-dated, missing-timestamp, unreadable, oversized, or ambiguous indexes are rejected.
+- `FOUR_K_TRANSCODE_ALLOWED` - default `false`; a 4K source may be swapped to a verified lower Plex Version, but it may not be passed through to Plex for transcoding.
+- `REQUIRE_FRESH_INDEX_FOR_4K` - default `true`; 4K swaps require a fresh version-index hit proving the current item and lower same-edition fallback before cache or live lookup can be trusted.
+- `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget. If a 4K fallback cannot be proven inside the budget from the fresh index, the transcode is blocked.
 - `MAX_CACHE_BYTES` - default `1000000`; oversized hot-path cache files are ignored and reported instead of delaying first-segment startup.
 - Shim telemetry records aggregate p50/p95 latency by client family, version-index hit/miss/stale counters, and no-fallback diagnostics without usernames, tokens, IPs, rating keys, or session identifiers.
 - `TELEMETRY_FILE` - optional sanitized aggregate counters for outcomes, client families, version-index status, and latency summaries. It must never contain usernames, tokens, IPs, rating keys, session ids, or raw watch timelines.
-- `SHADOW_MODE` - records would-be swaps and immediately passes through to the real transcoder. Use it for broad fleet observation before targeted enforcement.
+- `SHADOW_MODE` - records would-be swaps and immediately passes through to the real transcoder for non-4K decisions. It is overridden for 4K because 4K transcode is never allowed.
 - `ENABLE_SECTION_SCAN_FALLBACK` â€“ default `True`; if Plex search returns no file-name results, the shim tries the matching library section by location and exact `Part` path. This keeps version lookup working for libraries whose search index hides version filenames.
 - `MAX_ALLOWED_HEIGHT` â€“ default `2000` (treats ~2160p as protected).
 - `MAX_FALLBACK_HEIGHT` â€“ default `1080`.
@@ -354,6 +358,7 @@ A complete example file is included as `Downshiftarr.env.example`.
 | Key | Default | Meaning |
 |---|---:|---|
 | `MAX_ALLOWED_HEIGHT` | `2000` | Height threshold; `>=` is treated as 4K-ish |
+| `FOUR_K_TRANSCODE_ALLOWED` | `0` | Hard invariant: 4K sources must downshift or be blocked, never transcoded |
 | `PREFER_HEIGHTS` | `1080,720,576,480,360` | Preferred fallback â€œversion heightsâ€ in order |
 | `EXEMPT_USERS` | blank | Comma-separated Plex usernames to skip |
 | `ENFORCEMENT_MODE` | `targeted` | Use `shadow` for observation-only evaluation before active enforcement |

@@ -247,6 +247,7 @@ FALLBACK_SDR_ONLY = env_bool("FALLBACK_SDR_ONLY", True)
 ALLOW_HDR_FALLBACK = env_bool("ALLOW_HDR_FALLBACK", False)
 AUTO_WATERFALL_ON_CONTINUED_TRANSCODE = env_bool("AUTO_WATERFALL_ON_CONTINUED_TRANSCODE", True)
 WATERFALL_MIN_HEIGHT = env_int("WATERFALL_MIN_HEIGHT", 360) or 360
+FOUR_K_TRANSCODE_ALLOWED = env_bool("FOUR_K_TRANSCODE_ALLOWED", False)
 
 # Session lookup tuning
 SESSION_LOOKUP_RETRIES = env_int("SESSION_LOOKUP_RETRIES", 4) or 4
@@ -1561,6 +1562,7 @@ def main(argv: List[str]) -> int:
     log.debug("Current media: id=%s height=%s dyn_range=%s", cur_mid, cur_h, cur_dr)
 
     protected_source = is_high_quality(cur_h, cur_dr)
+    four_k_transcode_blocked = cur_h is not None and cur_h >= MAX_ALLOWED_HEIGHT and not FOUR_K_TRANSCODE_ALLOWED
     continued_waterfall = should_waterfall_continued_transcode(cur_h, cur_dr)
     client_family = safe_client_family(ctx.player_product, ctx.player_title, ev.video_decision)
 
@@ -1581,20 +1583,20 @@ def main(argv: List[str]) -> int:
             target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
         except Exception as e:
             log_event("WARNING", "Unable to fetch library item for fallback selection: %s" % e, ev=ev, ctx=ctx)
-            if protected_source and KILL_ON_NO_FALLBACK_MEDIA:
+            if four_k_transcode_blocked or (protected_source and KILL_ON_NO_FALLBACK_MEDIA):
                 terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
             return 0
 
     if target_idx is None:
         log_event("WARNING", "No suitable fallback media found (per policy/config).", ev=ev, ctx=ctx)
-        if protected_source and KILL_ON_NO_FALLBACK_MEDIA:
+        if four_k_transcode_blocked or (protected_source and KILL_ON_NO_FALLBACK_MEDIA):
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
         return 0
     target_media = (getattr(item_for_versions, "media", []) or [None])[target_idx]
     target_h = media_height(target_media) if target_media is not None else None
     target_dr = media_dynamic_range(target_media) if target_media is not None else "UNKNOWN"
 
-    if SHADOW_MODE:
+    if SHADOW_MODE and not four_k_transcode_blocked:
         elapsed_ms = (time.monotonic() - start_ts) * 1000.0
         adaptive_record_candidate(
             client_family,
@@ -1618,12 +1620,14 @@ def main(argv: List[str]) -> int:
             ctx=ctx,
         )
         return 0
+    if SHADOW_MODE and four_k_transcode_blocked:
+        log_event("WARNING", "Shadow mode overridden because 4K transcode is not allowed.", ev=ev, ctx=ctx)
 
     # Find controllable client
     client, identifier_used = find_client(plex, ctx, ev.machine_id)
     if not client:
         log_event("ERROR", "Unable to find a controllable Plex client for this session.", ev=ev, ctx=ctx)
-        if KILL_ON_CLIENT_NOT_FOUND:
+        if four_k_transcode_blocked or KILL_ON_CLIENT_NOT_FOUND:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_CLIENT_NOT_FOUND)
         return 0
 
@@ -1669,7 +1673,7 @@ def main(argv: List[str]) -> int:
         record_telemetry("downshift_failed", ev, ctx, latency_ms=elapsed_ms)
         adaptive_record_candidate(client_family, cur_h, cur_dr, target_h, target_dr, "downshift_failed", latency_ms=elapsed_ms)
         log_event("ERROR", "Downshift failed: %s" % e, ev=ev, ctx=ctx)
-        if KILL_ON_SWITCH_FAIL:
+        if four_k_transcode_blocked or KILL_ON_SWITCH_FAIL:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_SWITCH_FAIL)
         return 0
 

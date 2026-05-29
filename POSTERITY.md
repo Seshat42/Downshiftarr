@@ -160,3 +160,12 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: Should adaptive learning promote rules automatically? A: Yes, but only by sanitized client family after at least 30 observations, 95% or better success, no recent playback/downshift failures, no version/edition ambiguity, and p95 decision latency below 75 ms.
 - The Plex Transcoder shim now exposes `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS`, records `live_lookup_waterfall_swap` telemetry, uses bounded live Plex lookup after an index miss, skips extra metadata fetches when the version index already carries enough sibling `Media` metadata, and passes through if the decision budget expires even when strict unsure-kill is enabled.
 - `Downshiftarr.py` now treats adaptive promotion as aggregate-only trust data. It rejects unknown-family promotion, records candidate latency/recent outcomes, supports sanitized adaptive outcome ingestion for Tautulli hooks, and keeps raw usernames, tokens, IPs, rating keys, machine identifiers, session ids, device ids, and timelines out of durable state.
+
+## 2026-05-29 No-4K-Transcode Production Invariant
+
+- Q: Is 4K content ever allowed to transcode? A: No. The operator made this a hard requirement: if Plex starts transcoding a 4K source, Downshiftarr must immediately use a fresh verified same-item/same-edition Plex Versions index to swap lower, or block the 4K transcode.
+- Q: What happens when no lower version is proven? A: Block the 4K transcode. Playback continuity is handled by proactive lower-version generation and readiness proof, not by allowing a 4K transcode to continue.
+- Q: May runtime 4K decisions depend on slower live lookup? A: No. A fresh version index is mandatory for 4K decisions. Live lookup remains available only for non-4K continued-transcode diagnostics.
+- Q: How should new 4K media be handled? A: Auto-generate lower versions and keep the item out of protected-ready status until the lower-version ladder is verified and indexed.
+- The Plex Transcoder shim now defaults to `FOUR_K_TRANSCODE_ALLOWED=false` and `REQUIRE_FRESH_INDEX_FOR_4K=true`. It blocks 4K pass-through on missing/stale/future/untimestamped indexes, cache-only hits, lookup uncertainty, budget exhaustion, and shadow mode.
+- `Downshiftarr.py` also enforces the invariant: relaxed no-fallback toggles and shadow mode cannot let a 4K video transcode continue.

@@ -55,3 +55,17 @@ def test_emulator_lab_key_value_output_is_machine_parseable():
     assert parsed["emulator_lab"] == "pass"
     assert json.loads(parsed["synthetic_video_profiles"]) == ["roku", "android_tv"]
     assert json.loads(parsed["unsupported_by_host"])["apple_simulator"] == "requires macOS"
+
+
+def test_emulator_lab_redacts_operator_paths():
+    proof = {
+        "adb": "/mnt/c/Users/D3/Documents/Downshiftarr/emulator-lab/android-sdk/platform-tools/adb.exe",
+        "sdkmanager": "missing",
+        "android_sdk_roots": ["/mnt/c/Users/D3/Documents/Downshiftarr/emulator-lab/android-sdk"],
+    }
+
+    redacted = emulator_lab.redacted_for_evidence(proof)
+
+    assert redacted["adb"] == "present"
+    assert redacted["sdkmanager"] == "missing"
+    assert redacted["android_sdk_roots"] == ["operator-local-android-sdk"]

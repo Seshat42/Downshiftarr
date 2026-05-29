@@ -246,13 +246,27 @@ def flatten_key_values(data: dict[str, Any]) -> list[str]:
     return lines
 
 
+def redacted_for_evidence(data: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(data)
+    for probe in COMMAND_PROBES:
+        value = redacted.get(probe.key)
+        if value and value != "missing":
+            redacted[probe.key] = "present"
+    if redacted.get("android_sdk_roots"):
+        redacted["android_sdk_roots"] = ["operator-local-android-sdk"]
+    return redacted
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of key=value proof lines.")
     parser.add_argument("--output", type=Path, help="Write proof to this path.")
+    parser.add_argument("--redact-paths", action="store_true", help="Replace local executable and SDK paths with present/missing markers.")
     args = parser.parse_args(argv)
 
     proof = evaluate()
+    if args.redact_paths:
+        proof = redacted_for_evidence(proof)
     if args.json:
         text = json.dumps(proof, indent=2, sort_keys=True) + "\n"
     else:

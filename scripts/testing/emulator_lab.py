@@ -197,6 +197,10 @@ def evaluate() -> dict[str, Any]:
     commands = command_inventory()
     avds = avd_names()
     android_tools_present = all(commands[key] != "missing" for key in ("adb", "android_emulator", "avdmanager", "sdkmanager"))
+    android_targets = {
+        target: ("present" if any(target.replace("_", "-") in name.lower().replace("_", "-") for name in avds) else "not_created")
+        for target in ANDROID_AVD_TARGETS
+    }
 
     result: dict[str, Any] = {
         "emulator_lab": "pass",
@@ -211,10 +215,14 @@ def evaluate() -> dict[str, Any]:
         "android_sdk_roots": android_sdk_roots(),
         "android_tools_present": "yes" if android_tools_present else "no",
         "android_avd_names": avds,
-        "android_avd_targets": {
-            target: ("present" if any(target.replace("_", "-") in name.lower().replace("_", "-") for name in avds) else "not_created")
-            for target in ANDROID_AVD_TARGETS
-        },
+        "android_avd_targets": android_targets,
+        "android_official_avds": "pass"
+        if android_tools_present and all(value == "present" for value in android_targets.values())
+        else "missing",
+        "android_mobile_avd": android_targets["android_mobile"],
+        "android_tablet_avd": android_targets["android_tablet"],
+        "android_tv_avd": android_targets["android_tv"],
+        "google_tv_avd": android_targets["google_tv"],
         "tizen_emulator": "available" if commands["tizen_cli"] != "missing" and commands["samsung_sdb"] != "missing" else "missing",
         "webos_emulator": "available" if commands["webos_cli"] != "missing" and commands["webos_setup_device"] != "missing" else "missing",
         "unsupported_platforms_documented": "pass",

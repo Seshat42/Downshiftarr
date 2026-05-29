@@ -31,11 +31,15 @@ def test_emulator_lab_detects_vendor_commands(monkeypatch, tmp_path):
     proof = emulator_lab.evaluate()
 
     assert proof["android_tools_present"] == "yes"
+    assert proof["android_official_avds"] == "missing"
     assert proof["tizen_emulator"] == "available"
     assert proof["webos_emulator"] == "available"
     assert proof["android_avd_targets"]["android_mobile"] == "present"
     assert proof["android_avd_targets"]["android_tv"] == "present"
     assert proof["android_avd_targets"]["google_tv"] == "present"
+    assert proof["android_mobile_avd"] == "present"
+    assert proof["android_tv_avd"] == "present"
+    assert proof["google_tv_avd"] == "present"
 
 
 def test_emulator_lab_key_value_output_is_machine_parseable():

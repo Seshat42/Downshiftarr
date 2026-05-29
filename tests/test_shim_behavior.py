@@ -658,33 +658,34 @@ def test_shim_records_sanitized_aggregate_telemetry(monkeypatch, tmp_path):
     telemetry_path = tmp_path / "telemetry" / "shim.json"
     monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
 
-    shim.record_telemetry("waterfall_swap", elapsed_ms=12.4, client_family="Plex for Roku / Alice")
+    shim.record_telemetry("waterfall_swap", elapsed_ms=12.4)
 
     text = telemetry_path.read_text(encoding="utf-8")
     data = json.loads(text)
     assert data["version"] == 1
     assert data["outcomes"]["waterfall_swap"]["count"] == 1
     assert data["latency_ms"]["count"] == 1
-    assert data["client_families"]["roku"]["count"] == 1
+    assert "client_families" not in data
+    assert "latency_by_client_family" not in data
     assert "Alice" not in text
     assert "Plex for Roku" not in text
 
 
-def test_shim_telemetry_records_percentiles_by_client_family(monkeypatch, tmp_path):
+def test_shim_telemetry_records_global_percentiles_without_device_family(monkeypatch, tmp_path):
     shim = load_shim()
     telemetry_path = tmp_path / "telemetry" / "shim.json"
     monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
 
     for value in (5.0, 12.0, 30.0, 90.0):
-        shim.record_telemetry("cache_swap", elapsed_ms=value, client_family="Plex for Roku / Alice", index_status="hit")
+        shim.record_telemetry("cache_swap", elapsed_ms=value, index_status="hit")
 
     text = telemetry_path.read_text(encoding="utf-8")
     data = json.loads(text)
     assert data["latency_ms"]["count"] == 4
     assert data["latency_ms"]["p95"] == 90.0
-    assert data["latency_by_client_family"]["roku"]["count"] == 4
-    assert data["latency_by_client_family"]["roku"]["p95"] == 90.0
     assert data["version_index"]["hit"]["count"] == 4
+    assert "client_families" not in data
+    assert "latency_by_client_family" not in data
     assert "Alice" not in text
 
 

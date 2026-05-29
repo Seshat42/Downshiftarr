@@ -168,8 +168,8 @@ Key settings youâ€™ll care about first:
 - `REQUIRE_FRESH_INDEX_FOR_4K` - default `true`; 4K swaps require a fresh version-index hit proving the current item and lower same-edition fallback before cache or live lookup can be trusted.
 - `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget. If a 4K fallback cannot be proven inside the budget from the fresh index, the transcode is blocked.
 - `MAX_CACHE_BYTES` - default `1000000`; oversized hot-path cache files are ignored and reported instead of delaying first-segment startup.
-- Shim telemetry records aggregate p50/p95 latency by client family, version-index hit/miss/stale counters, and no-fallback diagnostics without usernames, tokens, IPs, rating keys, or session identifiers.
-- `TELEMETRY_FILE` - optional sanitized aggregate counters for outcomes, client families, version-index status, and latency summaries. It must never contain usernames, tokens, IPs, rating keys, session ids, or raw watch timelines.
+- Shim telemetry records aggregate p50/p95 latency, version-index hit/miss/stale counters, and no-fallback diagnostics without device/client-family classification, usernames, tokens, IPs, rating keys, or session identifiers.
+- `TELEMETRY_FILE` - optional sanitized aggregate counters for outcomes, version-index status, and latency summaries. It must never contain device/client-family buckets, usernames, tokens, IPs, rating keys, session ids, or raw watch timelines.
 - `SHADOW_MODE` - records would-be swaps and immediately passes through to the real transcoder for non-4K decisions. It is overridden for 4K because 4K transcode is never allowed.
 - `ENABLE_SECTION_SCAN_FALLBACK` â€“ default `True`; if Plex search returns no file-name results, the shim tries the matching library section by location and exact `Part` path. This keeps version lookup working for libraries whose search index hides version filenames.
 - `MAX_ALLOWED_HEIGHT` â€“ default `2000` (treats ~2160p as protected).

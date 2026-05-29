@@ -164,8 +164,16 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 ## 2026-05-29 No-4K-Transcode Production Invariant
 
 - Q: Is 4K content ever allowed to transcode? A: No. The operator made this a hard requirement: if Plex starts transcoding a 4K source, Downshiftarr must immediately use a fresh verified same-item/same-edition Plex Versions index to swap lower, or block the 4K transcode.
-- Q: What happens when no lower version is proven? A: Block the 4K transcode. Playback continuity is handled by proactive lower-version generation and readiness proof, not by allowing a 4K transcode to continue.
+- Q: What happens when no lower version is proven? A: Block the 4K transcode. Playback continuity is handled by Bragi media-readiness policy and Plex Versions proof, not by allowing a 4K transcode to continue.
 - Q: May runtime 4K decisions depend on slower live lookup? A: No. A fresh version index is mandatory for 4K decisions. Live lookup remains available only for non-4K continued-transcode diagnostics.
-- Q: How should new 4K media be handled? A: Auto-generate lower versions and keep the item out of protected-ready status until the lower-version ladder is verified and indexed.
+- Q: How should new 4K media be handled? A: Downshiftarr must not generate media. Bragi media intake must already provide at least one lower Plex Version, normally 1080p or 720p, before a protected 4K item is considered ready.
+- Superseded note: an earlier 2026-05-29 planning phrase used "auto-generate lower versions"; the current locked policy replaces that with version-readiness validation only.
 - The Plex Transcoder shim now defaults to `FOUR_K_TRANSCODE_ALLOWED=false` and `REQUIRE_FRESH_INDEX_FOR_4K=true`. It blocks 4K pass-through on missing/stale/future/untimestamped indexes, cache-only hits, lookup uncertainty, budget exhaustion, and shadow mode.
 - `Downshiftarr.py` also enforces the invariant: relaxed no-fallback toggles and shadow mode cannot let a 4K video transcode continue.
+
+## 2026-05-29 Device-Blind Shim Clarification
+
+- Q: Should the Plex Transcoder shim prioritize device identification? A: No. The operator clarified that once Plex invokes the shim, the transcode itself is the important signal. Device/client-family classification must stay out of the shim hot path.
+- Q: Where may client-aware behavior remain? A: Only in the Tautulli/Downshiftarr controller layer when needed to target the correct session, preserve resume/seek behavior, record sanitized aggregate outcomes, or perform asynchronous diagnostics.
+- Q: What fallback order should device-blind enforcement use? A: Prefer 1080p SDR first, then waterfall to 720p, 480p, and 360p if video transcoding continues.
+- Shim telemetry is now aggregate-only for outcomes, version-index status, and latency. It no longer records `client_families` or `latency_by_client_family`.

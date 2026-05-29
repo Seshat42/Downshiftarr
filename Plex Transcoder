@@ -513,54 +513,11 @@ def active_decision_budget_exhausted() -> bool:
     return remaining is not None and remaining <= 0
 
 
-def safe_client_family(value: object = "") -> str:
-    raw = str(value or "").lower()
-    if "roku" in raw:
-        return "roku"
-    if "fire" in raw:
-        return "fire_tv"
-    if "shield" in raw:
-        return "nvidia_shield"
-    if "android tv" in raw or "google tv" in raw:
-        return "android_tv"
-    if "android" in raw:
-        return "android"
-    if "ipad" in raw or "ipados" in raw:
-        return "ipados"
-    if "iphone" in raw or "ios" in raw:
-        return "ios"
-    if "apple tv" in raw or "tvos" in raw:
-        return "apple_tv"
-    if "chromecast" in raw:
-        return "chromecast"
-    if "samsung" in raw or "tizen" in raw:
-        return "samsung_tv"
-    if "lg" in raw or "webos" in raw:
-        return "lg_tv"
-    if "xbox" in raw:
-        return "xbox"
-    if "playstation" in raw or "ps5" in raw or "ps4" in raw:
-        return "playstation"
-    if "relay" in raw:
-        return "relay"
-    if "web" in raw or "chrome" in raw or "firefox" in raw or "safari" in raw or "edge" in raw:
-        return "plex_web"
-    if "htpc" in raw or "desktop" in raw:
-        return "desktop"
-    if "windows" in raw or "macos" in raw or "linux" in raw:
-        return "desktop"
-    if "vizio" in raw or "vidaa" in raw or "hisense" in raw or "smart tv" in raw:
-        return "smart_tv"
-    return "unknown"
-
-
 def _empty_telemetry() -> dict:
     return {
         "version": 1,
         "outcomes": {},
-        "client_families": {},
         "latency_ms": {"count": 0, "sum": 0.0, "max": 0.0, "samples": []},
-        "latency_by_client_family": {},
         "version_index": {},
     }
 
@@ -591,7 +548,6 @@ def record_telemetry(
     outcome: str,
     *,
     elapsed_ms: Optional[float] = None,
-    client_family: object = "",
     index_status: str = "",
 ) -> None:
     if not (TELEMETRY_ENABLED and TELEMETRY_FILE):
@@ -607,14 +563,10 @@ def record_telemetry(
             data = _empty_telemetry()
 
         _increment_counter(data, "outcomes", re.sub(r"[^a-z0-9_.-]+", "_", str(outcome).lower()).strip("_") or "unknown")
-        family = safe_client_family(client_family)
-        _increment_counter(data, "client_families", family)
         if index_status:
             _increment_counter(data, "version_index", re.sub(r"[^a-z0-9_.-]+", "_", index_status.lower()).strip("_") or "unknown")
         if elapsed_ms is not None:
             _record_latency(data.setdefault("latency_ms", {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), elapsed_ms)
-            by_family = data.setdefault("latency_by_client_family", {})
-            _record_latency(by_family.setdefault(family, {"count": 0, "sum": 0.0, "max": 0.0, "samples": []}), elapsed_ms)
 
         tmp = TELEMETRY_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:

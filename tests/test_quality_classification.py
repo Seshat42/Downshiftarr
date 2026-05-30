@@ -1,7 +1,7 @@
 import pytest
 
 import Downshiftarr
-from Downshiftarr import classify_dynamic_range, is_high_quality
+from Downshiftarr import classify_dynamic_range, is_high_quality, should_waterfall_continued_transcode
 
 
 @pytest.mark.parametrize(
@@ -53,6 +53,29 @@ def test_is_high_quality_by_height_threshold(monkeypatch):
     assert not is_high_quality(1080, "SDR")
     assert not is_high_quality(1999, "SDR")
     assert not is_high_quality(None, "SDR")
+
+
+def test_default_protected_height_is_anything_above_1080():
+    assert Downshiftarr.PROTECTED_SOURCE_MIN_HEIGHT == 1081
+    assert not Downshiftarr.is_protected_source_height(1080)
+    assert Downshiftarr.is_protected_source_height(1081)
+    assert Downshiftarr.is_protected_source_height(1440)
+    assert Downshiftarr.is_protected_source_height(2160)
+
+
+def test_1080_hdr_waterfalls_by_default_without_hard_protection(monkeypatch):
+    monkeypatch.setattr(Downshiftarr, "PROTECTED_SOURCE_MIN_HEIGHT", 1081)
+    monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 1081)
+    monkeypatch.setattr(Downshiftarr, "HARD_PROTECT_1080_HDR", False, raising=False)
+
+    assert not Downshiftarr.is_hard_protected_source(1080, "HDR")
+    assert should_waterfall_continued_transcode(1080, "HDR")
+
+
+def test_1080_hdr_can_be_hard_protected_by_config(monkeypatch):
+    monkeypatch.setattr(Downshiftarr, "HARD_PROTECT_1080_HDR", True, raising=False)
+
+    assert Downshiftarr.is_hard_protected_source(1080, "HDR")
 
 
 def test_is_high_quality_by_dynamic_range(monkeypatch):

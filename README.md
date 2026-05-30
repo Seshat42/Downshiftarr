@@ -38,10 +38,8 @@ Why two layers? Plex clients (especially some smart TV apps) can be....creativel
 Downshiftarr:
 
 - Uses the Tautulli event as the **trigger** (and as identifiers: rating key, session id/key, machine id, username).
-- Looks up the **actual Plex session** and reads the selected mediaâ€™s **height** and **dynamic range** from Plex.
-- Classifies the source as â€œprotectedâ€ if:
-  - `height >= MAX_ALLOWED_HEIGHT` (default 2000 â†’ catches 2160p), **or**
-  - dynamic range is clearly not SDR (HDR / Dolby Vision / HLG, etc.).
+- Looks up the **actual Plex session** and reads the selected media's **height** and **dynamic range** from Plex.
+- Classifies the source as protected if `height >= PROTECTED_SOURCE_MIN_HEIGHT` (default `1081`, so anything above 1080p is protected). 1080p HDR/remux sources waterfall by default, but are not hard-blocked unless explicitly configured later.
 
 If itâ€™s protected **and** video is being transcoded:
 - Pick the best fallback version under the threshold (and typically SDR).
@@ -54,7 +52,7 @@ Downshiftarr only downshifts across Plex **Versions** of the same release. It mu
 The optional **Plex Transcoder shim** runs *before* Downshiftarr.py ever gets an event:
 
 - Plex spawns `Plex Transcoder` â†’ the shim executes.
-- The shim detects whether the transcode input is â€œprotectedâ€ (4K-ish and/or HDR/DV).
+- The shim detects whether the transcode input is protected (>1080 actual height by default).
 - If protected, it tries to **waterfall** to a compliant sibling version (e.g. 1080p SDR).
 - If an already downshifted SDR version is still being transcoded, it can continue the waterfall to 720p, 576p, 480p, and 360p versions.
 - If no safe sibling is available, it can **fail-closed** immediately so the protected transcode never starts.
@@ -142,7 +140,7 @@ Example:
   "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
   "VERSION_INDEX_FILE": "/var/lib/downshiftarr/cache/plex-version-index.json",
   "ALLOW_LIVE_LOOKUP_ON_INDEX_MISS": true,
-  "VERSION_INDEX_MAX_AGE_S": 900,
+  "VERSION_INDEX_MAX_AGE_S": 60,
   "FOUR_K_TRANSCODE_ALLOWED": false,
   "REQUIRE_FRESH_INDEX_FOR_4K": true,
   "DECISION_BUDGET_MS": 100,
@@ -162,17 +160,17 @@ Key settings youâ€™ll care about first:
 - `PLEX_TOKEN_FILE` â€“ optional absolute path to a root-owned token file readable by the Plex service user. This is preferred when Plex does not provide `X_PLEX_TOKEN` to spawned transcodes because it keeps the token out of argv, examples, and process environment. The file must be regular, non-symlinked, not group/other writable, not other-readable, and owned by root or the Plex service user.
 - `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens through `PLEX_TOKEN_FILE` or, when Plex supplies one, `X_PLEX_TOKEN`/`PLEX_TOKEN`/`PLEX_USER_TOKEN` process environment.
 - `VERSION_INDEX_FILE` - required for production 4K enforcement. The shim checks the precomputed Plex Versions index before live Plex search/section scans so first-segment decisions stay fast.
-- `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS` - default `true`; non-4K continued-transcode diagnostics may use a bounded live Plex lookup inside the same 100 ms decision budget. 4K decisions do not rely on this path.
+- `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS` - default `true`; every cache/index miss or stale index uses a bounded local Plex lookup inside the same 100 ms decision budget. Protected sources still block if proof or time runs out.
 - `VERSION_INDEX_MAX_AGE_S` - freshness limit for indexes. Production indexes must include `generated_at_epoch`; stale, future-dated, missing-timestamp, unreadable, oversized, or ambiguous indexes are rejected.
 - `FOUR_K_TRANSCODE_ALLOWED` - default `false`; a 4K source may be swapped to a verified lower Plex Version, but it may not be passed through to Plex for transcoding.
-- `REQUIRE_FRESH_INDEX_FOR_4K` - default `true`; 4K swaps require a fresh version-index hit proving the current item and lower same-edition fallback before cache or live lookup can be trusted.
-- `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget. If a 4K fallback cannot be proven inside the budget from the fresh index, the transcode is blocked.
+- `REQUIRE_FRESH_INDEX_FOR_4K` - retained as a strictness marker; protected swaps require fresh index proof or a bounded same-budget Plex lookup proving the same item and edition.
+- `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget. If a protected fallback cannot be proven inside the budget, the transcode is blocked.
 - `MAX_CACHE_BYTES` - default `1000000`; oversized hot-path cache files are ignored and reported instead of delaying first-segment startup.
 - Shim telemetry records aggregate p50/p95 latency, version-index hit/miss/stale counters, and no-fallback diagnostics without device/client-family classification, usernames, tokens, IPs, rating keys, or session identifiers.
 - `TELEMETRY_FILE` - optional sanitized aggregate counters for outcomes, version-index status, and latency summaries. It must never contain device/client-family buckets, usernames, tokens, IPs, rating keys, session ids, or raw watch timelines.
 - `SHADOW_MODE` - records would-be swaps and immediately passes through to the real transcoder for non-4K decisions. It is overridden for 4K because 4K transcode is never allowed.
 - `ENABLE_SECTION_SCAN_FALLBACK` â€“ default `True`; if Plex search returns no file-name results, the shim tries the matching library section by location and exact `Part` path. This keeps version lookup working for libraries whose search index hides version filenames.
-- `MAX_ALLOWED_HEIGHT` â€“ default `2000` (treats ~2160p as protected).
+- `PROTECTED_SOURCE_MIN_HEIGHT` - default `1081`; `MAX_ALLOWED_HEIGHT` remains a compatibility alias.
 - `MAX_FALLBACK_HEIGHT` â€“ default `1080`.
 - `PREFER_HEIGHTS` â€“ default `(1080, 720, 576, 480, 360)`.
 - `FALLBACK_SDR_ONLY` â€“ default `True` (recommended).
@@ -357,18 +355,19 @@ A complete example file is included as `Downshiftarr.env.example`.
 
 | Key | Default | Meaning |
 |---|---:|---|
-| `MAX_ALLOWED_HEIGHT` | `2000` | Height threshold; `>=` is treated as 4K-ish |
+| `PROTECTED_SOURCE_MIN_HEIGHT` | `1081` | Actual height threshold; `>=1081` is protected 4K-ish |
+| `MAX_ALLOWED_HEIGHT` | `1081` | Backward-compatible alias for the protected height threshold |
 | `FOUR_K_TRANSCODE_ALLOWED` | `0` | Hard invariant: 4K sources must downshift or be blocked, never transcoded |
 | `PREFER_HEIGHTS` | `1080,720,576,480,360` | Preferred fallback â€œversion heightsâ€ in order |
 | `EXEMPT_USERS` | blank | Comma-separated Plex usernames to skip |
 | `ENFORCEMENT_MODE` | `targeted` | Use `shadow` for observation-only evaluation before active enforcement |
 | `SHADOW_MODE` | `0` | Records candidates without changing playback when enabled |
 | `TELEMETRY_FILE` | blank | Optional sanitized aggregate counters and latency summaries |
-| `ADAPTIVE_LEARNING_ENABLED` | `0` | Enables conservative learned fallback preferences from sanitized aggregate outcomes |
-| `ADAPTIVE_LEARNING_FILE` | blank | Root/private aggregate state file for learned fallback candidates |
-| `ADAPTIVE_MIN_SAMPLES` | `30` | Minimum outcome count before a learned rule can be promoted |
-| `ADAPTIVE_CONFIDENCE_MIN` | `0.95` | Minimum success confidence before a learned fallback height is preferred |
-| `ADAPTIVE_MAX_P95_MS` | `75` | Maximum p95 decision latency for a learned rule to be promoted |
+| `ADAPTIVE_LEARNING_ENABLED` | `0` | Disabled by policy; retained so older env files remain harmless |
+| `ADAPTIVE_LEARNING_FILE` | blank | Ignored while adaptive learning is disabled |
+| `ADAPTIVE_MIN_SAMPLES` | `30` | Historical/inert while adaptive learning is disabled |
+| `ADAPTIVE_CONFIDENCE_MIN` | `0.95` | Historical/inert while adaptive learning is disabled |
+| `ADAPTIVE_MAX_P95_MS` | `75` | Historical/inert while adaptive learning is disabled |
 | `AUTO_WATERFALL_ON_CONTINUED_TRANSCODE` | `1` | Continue downshifting lower versions when the client still video-transcodes |
 | `WATERFALL_MIN_HEIGHT` | `360` | Lowest height the waterfall should try |
 
@@ -465,7 +464,7 @@ Downshiftarr only acts when:
 
 ### Fallback selection logic (high level)
 - Ignore the currently selected version.
-- Only consider versions with `height < MAX_ALLOWED_HEIGHT`.
+- Only consider versions with `height < PROTECTED_SOURCE_MIN_HEIGHT`.
 - Prefer the heights in `PREFER_HEIGHTS` (in order).
 - In strict mode (`FALLBACK_SDR_ONLY=1`), only consider SDR candidates.
 - If no candidate exists, enforce (terminate) depending on kill toggle.

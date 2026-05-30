@@ -52,7 +52,7 @@ Options are set in the .env file:
   - Place ./Downshiftarr.env next to this script
 
 Policy knobs:
-  MAX_ALLOWED_HEIGHT=2000                 # >=2000 treated as "4K-ish"
+  PROTECTED_SOURCE_MIN_HEIGHT=1081        # actual height >=1081 is protected 4K-ish
   PREFER_HEIGHTS=1080,720,576,480,360     # fallback preference order
   AUTO_WATERFALL_ON_CONTINUED_TRANSCODE=1 # continue stepping down if transcode persists
   WATERFALL_MIN_HEIGHT=360                # lowest automatic waterfall target
@@ -209,7 +209,11 @@ TELEMETRY_FILE = env_str("TELEMETRY_FILE", "")
 TELEMETRY_ENABLED = env_bool("TELEMETRY_ENABLED", True)
 ENFORCEMENT_MODE = env_str("ENFORCEMENT_MODE", "targeted").lower()
 SHADOW_MODE = env_bool("SHADOW_MODE", ENFORCEMENT_MODE == "shadow")
-ADAPTIVE_LEARNING_ENABLED = env_bool("ADAPTIVE_LEARNING_ENABLED", False)
+# Disabled for the production policy selected for Bragi. Keep the parser and
+# historical state helpers inert so older env files cannot influence fallback.
+ADAPTIVE_LEARNING_CONFIGURED = env_bool("ADAPTIVE_LEARNING_ENABLED", False)
+ADAPTIVE_LEARNING_ENABLED = False
+ADAPTIVE_LEARNING_LOCKED_DISABLED = True
 ADAPTIVE_LEARNING_FILE = env_str("ADAPTIVE_LEARNING_FILE", "")
 ADAPTIVE_MIN_SAMPLES = env_int("ADAPTIVE_MIN_SAMPLES", 30) or 30
 ADAPTIVE_CONFIDENCE_MIN = env_float("ADAPTIVE_CONFIDENCE_MIN", 0.95)
@@ -234,7 +238,10 @@ TAUTULLI_LOG_SUBJECT = env_str("TAUTULLI_LOG_SUBJECT", "Downshiftarr")
 # Policy knobs
 EXEMPT_USERS = env_csv_set("EXEMPT_USERS", "")
 
-MAX_ALLOWED_HEIGHT = env_int("MAX_ALLOWED_HEIGHT", 2000) or 2000  # <2000 ~= avoid 2160p
+PROTECTED_SOURCE_MIN_HEIGHT = env_int("PROTECTED_SOURCE_MIN_HEIGHT", env_int("MAX_ALLOWED_HEIGHT", 1081) or 1081) or 1081
+MAX_ALLOWED_HEIGHT = PROTECTED_SOURCE_MIN_HEIGHT  # Backward-compatible alias for older tests/config.
+HARD_PROTECT_1080_HDR = env_bool("HARD_PROTECT_1080_HDR", False)
+HARD_PROTECT_1080_REMUX = env_bool("HARD_PROTECT_1080_REMUX", False)
 PREFER_HEIGHTS = tuple(int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480,360").split(",") if x.strip().isdigit()) or (
     1080,
     720,
@@ -269,7 +276,7 @@ KILL_ON_UNEXPECTED_ERROR = env_bool("KILL_ON_UNEXPECTED_ERROR", True)
 # Kill messages
 KILL_MESSAGE_DEFAULT = env_str(
     "KILL_MESSAGE_DEFAULT",
-    "This 4K/HDR title cannot be transcoded. Please select the 1080p (or lower) version from the 3 dot menu.",
+    "This protected version is still being prepared. Please retry shortly.",
 )
 
 KILL_MESSAGE_SESSION_NOT_FOUND = env_str("KILL_MESSAGE_SESSION_NOT_FOUND", KILL_MESSAGE_DEFAULT)
@@ -478,8 +485,12 @@ def _empty_learning_state() -> Dict[str, Any]:
     return {"version": 1, "client_families": {}}
 
 
+def adaptive_learning_active() -> bool:
+    return ADAPTIVE_LEARNING_ENABLED and not ADAPTIVE_LEARNING_LOCKED_DISABLED
+
+
 def load_adaptive_learning() -> Dict[str, Any]:
-    if not (ADAPTIVE_LEARNING_ENABLED and ADAPTIVE_LEARNING_FILE):
+    if not (adaptive_learning_active() and ADAPTIVE_LEARNING_FILE):
         return _empty_learning_state()
     try:
         data = json.loads(Path(ADAPTIVE_LEARNING_FILE).read_text(encoding="utf-8"))
@@ -494,7 +505,7 @@ def load_adaptive_learning() -> Dict[str, Any]:
 
 
 def save_adaptive_learning(data: Dict[str, Any]) -> None:
-    if not (ADAPTIVE_LEARNING_ENABLED and ADAPTIVE_LEARNING_FILE):
+    if not (adaptive_learning_active() and ADAPTIVE_LEARNING_FILE):
         return
     try:
         path = Path(ADAPTIVE_LEARNING_FILE)
@@ -522,7 +533,7 @@ def adaptive_record_candidate(
     *,
     latency_ms: Optional[float] = None,
 ) -> None:
-    if not ADAPTIVE_LEARNING_ENABLED:
+    if not adaptive_learning_active():
         return
     safe_outcome = re.sub(r"[^a-z0-9_.-]+", "_", str(outcome).lower()).strip("_") or "unknown"
     data = load_adaptive_learning()
@@ -550,7 +561,7 @@ def adaptive_record_candidate(
 
 def adaptive_preferred_height(family: str, source_height: Optional[int], source_dr: str) -> Optional[int]:
     family = safe_client_family(family)
-    if not (ADAPTIVE_LEARNING_ENABLED and source_height is not None):
+    if not (adaptive_learning_active() and source_height is not None):
         return None
     if family == "unknown":
         return None
@@ -889,6 +900,22 @@ def media_dynamic_range(media_obj) -> str:
     return "UNKNOWN"
 
 
+def media_file_path(media_obj) -> str:
+    try:
+        for part in getattr(media_obj, "parts", []) or []:
+            path = str(getattr(part, "file", "") or "").strip()
+            if path:
+                return path
+    except Exception:
+        pass
+    return ""
+
+
+def file_path_looks_remux(file_path: str) -> bool:
+    name = os.path.basename(str(file_path or "")).lower()
+    return bool(re.search(r"(?<![a-z0-9])remux(?![a-z0-9])", name))
+
+
 def media_audio_risk(media_obj) -> int:
     """Lower is better. Prefer broadly compatible audio for client UX."""
     risk = 0
@@ -982,13 +1009,28 @@ def classify_dynamic_range(dr: str) -> str:
     return "HDR"
 
 
+def is_protected_source_height(height: Optional[int]) -> bool:
+    return height is not None and height >= MAX_ALLOWED_HEIGHT
+
+
+def is_hard_protected_source(height: Optional[int], dyn_range: str, file_path: str = "") -> bool:
+    if is_protected_source_height(height):
+        return True
+    if HARD_PROTECT_1080_HDR and height == 1080 and classify_dynamic_range(dyn_range) not in ("SDR", "UNKNOWN"):
+        return True
+    if HARD_PROTECT_1080_REMUX and height == 1080 and file_path_looks_remux(file_path):
+        return True
+    return False
+
+
 def is_high_quality(height: Optional[int], dyn_range: str) -> bool:
     """
     A "high quality" source is:
-    - 4K-ish by height threshold, OR
-    - anything clearly not SDR (HDR / DV / HLG / etc)
+    - protected 4K-ish by height threshold, OR
+    - optionally hard-protected 1080 HDR/DV, OR
+    - anything clearly not SDR (HDR / DV / HLG / etc) for waterfall action
     """
-    if height is not None and height >= MAX_ALLOWED_HEIGHT:
+    if is_hard_protected_source(height, dyn_range):
         return True
     drc = classify_dynamic_range(dyn_range)
     if drc not in ("SDR", "UNKNOWN"):
@@ -1005,7 +1047,7 @@ def should_waterfall_continued_transcode(height: Optional[int], dyn_range: str) 
         return False
     if height is None or height <= WATERFALL_MIN_HEIGHT:
         return False
-    if is_high_quality(height, dyn_range):
+    if is_hard_protected_source(height, dyn_range):
         return False
     return True
 
@@ -1021,22 +1063,22 @@ def fetch_library_item(plex, rating_key: str):
     return plex.fetchItem(f"/library/metadata/{rating_key}")
 
 
-def current_media_identity(item) -> Tuple[Optional[str], Optional[int], str]:
+def current_media_identity(item) -> Tuple[Optional[str], Optional[int], str, str]:
     """
-    Determine the *currently selected* Media: (media_id, height, dynamic_range)
+    Determine the *currently selected* Media: (media_id, height, dynamic_range, file_path)
     """
     try:
         media_list = getattr(item, "media", []) or []
         for m in media_list:
             if getattr(m, "selected", False):
                 mid = getattr(m, "id", None)
-                return (str(mid) if mid is not None else None, media_height(m), media_dynamic_range(m))
+                return (str(mid) if mid is not None else None, media_height(m), media_dynamic_range(m), media_file_path(m))
         if media_list:
             m0 = media_list[0]
-            return (str(getattr(m0, "id", None)), media_height(m0), media_dynamic_range(m0))
+            return (str(getattr(m0, "id", None)), media_height(m0), media_dynamic_range(m0), media_file_path(m0))
     except Exception:
         pass
-    return (None, None, "UNKNOWN")
+    return (None, None, "UNKNOWN", "")
 
 
 def pick_best_fallback_media_index(
@@ -1558,11 +1600,11 @@ def main(argv: List[str]) -> int:
         return 0
 
     # Confirm current media identity (source-of-truth)
-    cur_mid, cur_h, cur_dr = current_media_identity(ctx.session_item)
+    cur_mid, cur_h, cur_dr, cur_path = current_media_identity(ctx.session_item)
     log.debug("Current media: id=%s height=%s dyn_range=%s", cur_mid, cur_h, cur_dr)
 
     protected_source = is_high_quality(cur_h, cur_dr)
-    four_k_transcode_blocked = cur_h is not None and cur_h >= MAX_ALLOWED_HEIGHT and not FOUR_K_TRANSCODE_ALLOWED
+    four_k_transcode_blocked = is_hard_protected_source(cur_h, cur_dr, cur_path) and not FOUR_K_TRANSCODE_ALLOWED
     continued_waterfall = should_waterfall_continued_transcode(cur_h, cur_dr)
     client_family = safe_client_family(ctx.player_product, ctx.player_title, ev.video_decision)
 
@@ -1583,13 +1625,13 @@ def main(argv: List[str]) -> int:
             target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
         except Exception as e:
             log_event("WARNING", "Unable to fetch library item for fallback selection: %s" % e, ev=ev, ctx=ctx)
-            if four_k_transcode_blocked or (protected_source and KILL_ON_NO_FALLBACK_MEDIA):
+            if four_k_transcode_blocked:
                 terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
             return 0
 
     if target_idx is None:
         log_event("WARNING", "No suitable fallback media found (per policy/config).", ev=ev, ctx=ctx)
-        if four_k_transcode_blocked or (protected_source and KILL_ON_NO_FALLBACK_MEDIA):
+        if four_k_transcode_blocked:
             terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
         return 0
     target_media = (getattr(item_for_versions, "media", []) or [None])[target_idx]

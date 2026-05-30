@@ -123,16 +123,14 @@ SECTION_SCAN_MAX_ITEMS: int = 1000
 # search/section scans during the first transcode segment.
 VERSION_INDEX_FILE: str = "/var/lib/downshiftarr/cache/plex-version-index.json"
 
-# When the hot index misses, allow a bounded live Plex lookup inside the same
-# decision budget for non-4K continued-transcode diagnostics. 4K transcode
-# enforcement is stricter: it requires the fresh version index and never relies
-# on slower live lookup as the proof source.
+# When the hot index misses or is stale, perform a bounded live Plex lookup
+# inside the same decision budget. Protected sources still fail closed if proof
+# or time runs out; non-protected continued waterfall paths fail open.
 ALLOW_LIVE_LOOKUP_ON_INDEX_MISS: bool = True
 
-# Reject stale hot-path indexes. A generated timestamp is mandatory because the
-# 4K no-transcode invariant depends on fresh same-item/same-edition version
-# proof, not an old cache file.
-VERSION_INDEX_MAX_AGE_S: int = 15 * 60
+# Reject stale hot-path indexes. Bragi keeps this tight so Plex Version
+# readiness changes become visible quickly without making clients wait.
+VERSION_INDEX_MAX_AGE_S: int = 60
 VERSION_INDEX_LAST_STATUS: str = "not_checked"
 
 
@@ -151,9 +149,11 @@ SKIP_WHEN_VIDEO_CODEC_COPY: bool = True
 
 # --- 5) Policy: what counts as "protected" and what counts as "compliant" -------------
 
-# Height threshold used to treat the source as "4K-ish".
-# Keep aligned with Downshiftarr.py MAX_ALLOWED_HEIGHT default (2000).
-MAX_ALLOWED_HEIGHT: int = 2000
+# Actual height threshold used to treat the source as protected 4K-ish.
+# This intentionally catches cinematic 4K encodes whose active height is above
+# 1080 but below 2160.
+PROTECTED_SOURCE_MIN_HEIGHT: int = 1081
+MAX_ALLOWED_HEIGHT: int = PROTECTED_SOURCE_MIN_HEIGHT  # Backward-compatible alias.
 
 # Do not allow the shim to select a fallback above this height.
 # Default 1080 keeps the goal very clear: swap to a 1080p or lower version.
@@ -170,6 +170,12 @@ FALLBACK_SDR_ONLY: bool = True
 
 # Only used when FALLBACK_SDR_ONLY is False.
 ALLOW_HDR_FALLBACK: bool = False
+
+# Optional stricter mode for HD HDR/DV sources. Bragi defaults this off so
+# 1080 HDR/remux cases waterfall when possible but do not hard-block playback
+# solely because no lower fallback exists.
+HARD_PROTECT_1080_HDR: bool = False
+HARD_PROTECT_1080_REMUX: bool = False
 
 # If the Plex metadata we can see does not clearly state HDR/DV, we can still infer that Plex *believes* the source is HDR when the transcoder arguments contain HDR->SDR tone-mapping filters.
 #
@@ -302,11 +308,14 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "VERSION_INDEX_MAX_AGE_S": int,
     "ONLY_INTERCEPT_STREAMING_TRANSCODES": bool,
     "SKIP_WHEN_VIDEO_CODEC_COPY": bool,
+    "PROTECTED_SOURCE_MIN_HEIGHT": int,
     "MAX_ALLOWED_HEIGHT": int,
     "MAX_FALLBACK_HEIGHT": int,
     "PREFER_HEIGHTS": tuple,
     "FALLBACK_SDR_ONLY": bool,
     "ALLOW_HDR_FALLBACK": bool,
+    "HARD_PROTECT_1080_HDR": bool,
+    "HARD_PROTECT_1080_REMUX": bool,
     "TREAT_TONEMAP_ARGS_AS_HDR": bool,
     "FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED": bool,
     "AUTO_WATERFALL_ON_CONTINUED_TRANSCODE": bool,
@@ -453,10 +462,15 @@ def _load_external_config() -> None:
     if not isinstance(data, dict):
         raise RuntimeError("Shim config file must contain a JSON object")
 
+    loaded_keys = set(data)
     for key, value in data.items():
         if key not in _CONFIG_SCHEMA:
             raise RuntimeError(f"Unsupported shim config key: {key}")
         globals()[key] = _coerce_config_value(key, value)
+    if "PROTECTED_SOURCE_MIN_HEIGHT" in loaded_keys:
+        globals()["MAX_ALLOWED_HEIGHT"] = globals()["PROTECTED_SOURCE_MIN_HEIGHT"]
+    elif "MAX_ALLOWED_HEIGHT" in loaded_keys:
+        globals()["PROTECTED_SOURCE_MIN_HEIGHT"] = globals()["MAX_ALLOWED_HEIGHT"]
 
 
 _load_external_config()
@@ -701,9 +715,14 @@ def file_path_height_hint(file_path: str) -> Optional[int]:
     return None
 
 
+def file_path_looks_remux(file_path: str) -> bool:
+    name = os.path.basename(str(file_path or "")).lower()
+    return bool(re.search(r"(?<![a-z0-9])remux(?![a-z0-9])", name))
+
+
 def file_path_looks_4k(file_path: str) -> bool:
     height = file_path_height_hint(file_path)
-    return height is not None and height >= MAX_ALLOWED_HEIGHT
+    return is_protected_height(height)
 
 
 def media_height(media: dict) -> Optional[int]:
@@ -1370,10 +1389,16 @@ def find_current_media(full_item: dict, input_file: str) -> Optional[MediaInfo]:
     return None
 
 
+def is_protected_height(height: Optional[int]) -> bool:
+    return height is not None and height >= MAX_ALLOWED_HEIGHT
+
+
 def is_protected_source(mi: MediaInfo) -> bool:
-    if mi.height is not None and mi.height >= MAX_ALLOWED_HEIGHT:
+    if is_protected_height(mi.height):
         return True
-    if mi.dyn_range_class not in ("SDR", "UNKNOWN"):
+    if HARD_PROTECT_1080_HDR and mi.height == 1080 and mi.dyn_range_class not in ("SDR", "UNKNOWN"):
+        return True
+    if HARD_PROTECT_1080_REMUX and mi.height == 1080 and file_path_looks_remux(mi.file_path):
         return True
     return False
 
@@ -1383,7 +1408,7 @@ def should_waterfall_continued_transcode(mi: MediaInfo) -> bool:
         return False
     if mi.height is None or mi.height <= WATERFALL_MIN_HEIGHT:
         return False
-    if is_protected_source(mi):
+    if is_protected_height(mi.height):
         return False
     return True
 
@@ -1643,13 +1668,10 @@ def main() -> None:
 
     # Parse required input stream indices from the args (for safe swapping).
     req_stream_max = required_max_input_stream_index(args)
-    input_looks_4k = file_path_looks_4k(input_file)
+    input_looks_4k = file_path_looks_4k(input_file) or (
+        HARD_PROTECT_1080_REMUX and file_path_height_hint(input_file) == 1080 and file_path_looks_remux(input_file)
+    )
     preverified_index_found: Optional[Tuple[str, dict]] = None
-
-    if input_looks_4k and (not FOUR_K_TRANSCODE_ALLOWED) and REQUIRE_FRESH_INDEX_FOR_4K:
-        preverified_index_found = plex_find_item_by_file_via_version_index(input_file)
-        if not preverified_index_found:
-            block_4k_transcode(f"fresh version index unavailable: {VERSION_INDEX_LAST_STATUS}", decision_start_ms)
 
     # Cache fast-path.
     if ENABLE_CACHE and not (input_looks_4k and REQUIRE_FRESH_INDEX_FOR_4K):
@@ -1775,9 +1797,7 @@ def main() -> None:
         return
 
     protected = is_protected_source(current)
-    current_is_4k = current.height is not None and current.height >= MAX_ALLOWED_HEIGHT
-    if current_is_4k and (not FOUR_K_TRANSCODE_ALLOWED) and REQUIRE_FRESH_INDEX_FOR_4K and VERSION_INDEX_LAST_STATUS != "hit":
-        block_4k_transcode(f"fresh version index required, status={VERSION_INDEX_LAST_STATUS}", decision_start_ms)
+    current_is_4k = is_protected_source(current)
     if (not protected) and (current.dyn_range_class == "UNKNOWN") and args_indicate_hdr_tonemap(args):
         # Plex is tonemapping, so treat the source as HDR even if metadata didn't say so.
         protected = True

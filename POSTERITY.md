@@ -177,3 +177,11 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: Where may client-aware behavior remain? A: Only in the Tautulli/Downshiftarr controller layer when needed to target the correct session, preserve resume/seek behavior, record sanitized aggregate outcomes, or perform asynchronous diagnostics.
 - Q: What fallback order should device-blind enforcement use? A: Prefer 1080p SDR first, then waterfall to 720p, 480p, and 360p if video transcoding continues.
 - Shim telemetry is now aggregate-only for outcomes, version-index status, and latency. It no longer records `client_families` or `latency_by_client_family`.
+
+## 2026-05-30 Device-Blind >1080 Protected Source Refresh
+
+- Q: How should cinematic 4K-ish heights be classified? A: Any actual video height above 1080 is protected; the source threshold is `PROTECTED_SOURCE_MIN_HEIGHT=1081`.
+- Q: Should adaptive learning influence fallback? A: No. Adaptive learning is disabled for this pass; deterministic fixed fallback order is authoritative.
+- Q: What should happen when the Plex Versions index is missing or stale? A: The shim always attempts a bounded local Plex lookup inside the same 100 ms budget. Protected `>1080` sources still block if proof or time runs out; non-protected continued waterfall paths pass through on uncertainty.
+- Q: How should 1080 HDR/remux behave? A: Waterfall by default, but do not hard-block solely for missing lower fallback. A future config may hard-protect 1080 HDR/remux if explicitly reapproved.
+- Bragi cache freshness target is 60 seconds. Downshiftarr continues to validate existing Plex Versions only and does not generate media files.

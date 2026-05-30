@@ -34,13 +34,13 @@ def test_dynamic_range_classification_is_stable_and_bounded(value):
 )
 def test_high_quality_matches_height_and_dynamic_range_policy(height, dynamic_range):
     old_max = Downshiftarr.MAX_ALLOWED_HEIGHT
-    Downshiftarr.MAX_ALLOWED_HEIGHT = 2000
+    Downshiftarr.MAX_ALLOWED_HEIGHT = 1081
 
     try:
         result = Downshiftarr.is_high_quality(height, dynamic_range)
 
         expected = bool(
-            (height is not None and height >= 2000) or Downshiftarr.classify_dynamic_range(dynamic_range) not in {"SDR", "UNKNOWN"}
+            (height is not None and height >= 1081) or Downshiftarr.classify_dynamic_range(dynamic_range) not in {"SDR", "UNKNOWN"}
         )
         assert result is expected
     finally:
@@ -56,7 +56,7 @@ def test_fallback_selection_never_selects_current_or_protected_media(fallback_he
     old_prefer = Downshiftarr.PREFER_HEIGHTS
     old_sdr_only = Downshiftarr.FALLBACK_SDR_ONLY
     old_allow_hdr = Downshiftarr.ALLOW_HDR_FALLBACK
-    Downshiftarr.MAX_ALLOWED_HEIGHT = 2000
+    Downshiftarr.MAX_ALLOWED_HEIGHT = 1081
     Downshiftarr.PREFER_HEIGHTS = (1080, 720, 480)
     Downshiftarr.FALLBACK_SDR_ONLY = True
     Downshiftarr.ALLOW_HDR_FALLBACK = False

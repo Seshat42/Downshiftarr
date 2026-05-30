@@ -12,16 +12,16 @@ pytestmark = [pytest.mark.boundary]
 @pytest.mark.parametrize(
     ("height", "dynamic_range", "expected"),
     [
-        (1999, "SDR", False),
-        (2000, "SDR", True),
-        (2001, "SDR", True),
+        (1080, "SDR", False),
+        (1081, "SDR", True),
+        (1440, "SDR", True),
         (None, "HDR", True),
         (0, "UNKNOWN", False),
         (-1, "SDR", False),
     ],
 )
 def test_high_quality_boundary_values(monkeypatch, height, dynamic_range, expected):
-    monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 2000)
+    monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 1081)
 
     assert Downshiftarr.is_high_quality(height, dynamic_range) is expected
 

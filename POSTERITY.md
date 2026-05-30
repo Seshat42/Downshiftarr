@@ -185,3 +185,10 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: What should happen when the Plex Versions index is missing or stale? A: The shim always attempts a bounded local Plex lookup inside the same 100 ms budget. Protected `>1080` sources still block if proof or time runs out; non-protected continued waterfall paths pass through on uncertainty.
 - Q: How should 1080 HDR/remux behave? A: Waterfall by default, but do not hard-block solely for missing lower fallback. A future config may hard-protect 1080 HDR/remux if explicitly reapproved.
 - Bragi cache freshness target is 60 seconds. Downshiftarr continues to validate existing Plex Versions only and does not generate media files.
+
+## 2026-05-30 Protected-Waterfall Speed Refinement
+
+- Q: What cache and lookup semantics should the shim use? A: Fresh index/cache first, then bounded Plex lookup on miss or stale evidence. Protected sources block if proof fails; non-protected sources pass through on proof or budget uncertainty.
+- Q: How should 1080 remux-like sources be identified? A: Keep 1080 remux as waterfall-by-default and use `REMUX_1080_MIN_BITRATE_KBPS=25000` as the initial configurable bitrate threshold.
+- Q: Should `Downshiftarr.py` share the same policy contract as the shim? A: Yes. The Tautulli script and shim should agree on protected height, remux-like detection, fallback order, and same-item/same-edition boundaries.
+- Implementation note: the shim now exposes a dedicated `protected_waterfall_decision` entrypoint, keeps generic fallback-cache use behind fresh actual-height proof, defaults `CACHE_TTL_S=60`, and treats bitrate-derived 1080 remux-like transcodes as waterfall candidates without enabling hard block by default.

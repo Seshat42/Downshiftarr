@@ -53,6 +53,7 @@ Options are set in the .env file:
 
 Policy knobs:
   PROTECTED_SOURCE_MIN_HEIGHT=1081        # actual height >=1081 is protected 4K-ish
+  REMUX_1080_MIN_BITRATE_KBPS=25000       # bitrate threshold for 1080 remux-like waterfall
   PREFER_HEIGHTS=1080,720,576,480,360     # fallback preference order
   AUTO_WATERFALL_ON_CONTINUED_TRANSCODE=1 # continue stepping down if transcode persists
   WATERFALL_MIN_HEIGHT=360                # lowest automatic waterfall target
@@ -242,6 +243,7 @@ PROTECTED_SOURCE_MIN_HEIGHT = env_int("PROTECTED_SOURCE_MIN_HEIGHT", env_int("MA
 MAX_ALLOWED_HEIGHT = PROTECTED_SOURCE_MIN_HEIGHT  # Backward-compatible alias for older tests/config.
 HARD_PROTECT_1080_HDR = env_bool("HARD_PROTECT_1080_HDR", False)
 HARD_PROTECT_1080_REMUX = env_bool("HARD_PROTECT_1080_REMUX", False)
+REMUX_1080_MIN_BITRATE_KBPS = env_int("REMUX_1080_MIN_BITRATE_KBPS", 25_000) or 25_000
 PREFER_HEIGHTS = tuple(int(x) for x in env_str("PREFER_HEIGHTS", "1080,720,576,480,360").split(",") if x.strip().isdigit()) or (
     1080,
     720,
@@ -911,6 +913,21 @@ def media_file_path(media_obj) -> str:
     return ""
 
 
+def media_bitrate_kbps(media_obj) -> Optional[int]:
+    for attr in ("bitrate", "videoBitrate", "videoBitrateKbps"):
+        value = safe_int(getattr(media_obj, attr, None))
+        if value:
+            return value
+    try:
+        for part in getattr(media_obj, "parts", []) or []:
+            value = safe_int(getattr(part, "bitrate", None))
+            if value:
+                return value
+    except Exception:
+        pass
+    return None
+
+
 def file_path_looks_remux(file_path: str) -> bool:
     name = os.path.basename(str(file_path or "")).lower()
     return bool(re.search(r"(?<![a-z0-9])remux(?![a-z0-9])", name))
@@ -1013,12 +1030,20 @@ def is_protected_source_height(height: Optional[int]) -> bool:
     return height is not None and height >= MAX_ALLOWED_HEIGHT
 
 
-def is_hard_protected_source(height: Optional[int], dyn_range: str, file_path: str = "") -> bool:
+def is_1080_remux_like(height: Optional[int], file_path: str = "", bitrate_kbps: Optional[int] = None) -> bool:
+    if height != 1080:
+        return False
+    if file_path_looks_remux(file_path):
+        return True
+    return bitrate_kbps is not None and bitrate_kbps >= REMUX_1080_MIN_BITRATE_KBPS
+
+
+def is_hard_protected_source(height: Optional[int], dyn_range: str, file_path: str = "", bitrate_kbps: Optional[int] = None) -> bool:
     if is_protected_source_height(height):
         return True
     if HARD_PROTECT_1080_HDR and height == 1080 and classify_dynamic_range(dyn_range) not in ("SDR", "UNKNOWN"):
         return True
-    if HARD_PROTECT_1080_REMUX and height == 1080 and file_path_looks_remux(file_path):
+    if HARD_PROTECT_1080_REMUX and is_1080_remux_like(height, file_path, bitrate_kbps):
         return True
     return False
 
@@ -1079,6 +1104,19 @@ def current_media_identity(item) -> Tuple[Optional[str], Optional[int], str, str
     except Exception:
         pass
     return (None, None, "UNKNOWN", "")
+
+
+def current_media_bitrate_kbps(item) -> Optional[int]:
+    try:
+        media_list = getattr(item, "media", []) or []
+        for m in media_list:
+            if getattr(m, "selected", False):
+                return media_bitrate_kbps(m)
+        if media_list:
+            return media_bitrate_kbps(media_list[0])
+    except Exception:
+        pass
+    return None
 
 
 def pick_best_fallback_media_index(
@@ -1601,11 +1639,13 @@ def main(argv: List[str]) -> int:
 
     # Confirm current media identity (source-of-truth)
     cur_mid, cur_h, cur_dr, cur_path = current_media_identity(ctx.session_item)
+    cur_bitrate = current_media_bitrate_kbps(ctx.session_item)
     log.debug("Current media: id=%s height=%s dyn_range=%s", cur_mid, cur_h, cur_dr)
 
-    protected_source = is_high_quality(cur_h, cur_dr)
-    four_k_transcode_blocked = is_hard_protected_source(cur_h, cur_dr, cur_path) and not FOUR_K_TRANSCODE_ALLOWED
-    continued_waterfall = should_waterfall_continued_transcode(cur_h, cur_dr)
+    remux_waterfall = is_1080_remux_like(cur_h, cur_path, cur_bitrate)
+    protected_source = is_high_quality(cur_h, cur_dr) or remux_waterfall
+    four_k_transcode_blocked = is_protected_source_height(cur_h) and not FOUR_K_TRANSCODE_ALLOWED
+    continued_waterfall = should_waterfall_continued_transcode(cur_h, cur_dr) or remux_waterfall
     client_family = safe_client_family(ctx.player_product, ctx.player_title, ev.video_decision)
 
     # If the current source isn't protected and waterfall is not useful, policy doesn't apply.

@@ -284,6 +284,21 @@ def test_continued_transcode_at_lowest_version_passes_without_termination(monkey
     assert client.play_calls == []
 
 
+def test_1080_remux_like_transcode_waterfalls_by_default(monkeypatch):
+    session = protected_session(machine_identifier="client-plex-web", view_offset=4444)
+    current = media("current-1080-remux", 1080, "SDR", selected=True)
+    current.bitrate = 25_000
+    session.media = [current, media("fallback-720-sdr", 720, "SDR")]
+    client = FakeClient(machine_identifier="client-plex-web")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    assert code == 0
+    assert terminations == []
+    assert client.play_calls == [{"item": session, "offset": 4444, "mediaIndex": 1, "partIndex": 0}]
+
+
 @pytest.mark.parametrize("decision", ["direct play", "direct stream"])
 @pytest.mark.parametrize("profile", video_capable_profiles(), ids=lambda p: p.name)
 def test_every_video_client_profile_ignores_non_transcode_decisions(profile, decision, monkeypatch):

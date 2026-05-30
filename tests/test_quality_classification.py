@@ -78,6 +78,15 @@ def test_1080_hdr_can_be_hard_protected_by_config(monkeypatch):
     assert Downshiftarr.is_hard_protected_source(1080, "HDR")
 
 
+def test_1080_remux_like_bitrate_is_configurable(monkeypatch):
+    monkeypatch.setattr(Downshiftarr, "REMUX_1080_MIN_BITRATE_KBPS", 25_000, raising=False)
+
+    assert Downshiftarr.is_1080_remux_like(1080, "", 25_000)
+    assert Downshiftarr.is_1080_remux_like(1080, "/media/movie-remux.mkv", None)
+    assert not Downshiftarr.is_1080_remux_like(1080, "", 12_000)
+    assert not Downshiftarr.is_1080_remux_like(720, "", 30_000)
+
+
 def test_is_high_quality_by_dynamic_range(monkeypatch):
     monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 2000)
 

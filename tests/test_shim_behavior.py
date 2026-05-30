@@ -42,6 +42,13 @@ def shim_media(file_path, height, dynamic_range="SDR", stream_count=2):
     }
 
 
+def shim_media_with_bitrate(file_path, height, bitrate, dynamic_range="SDR"):
+    row = shim_media(file_path, height, dynamic_range)
+    row["bitrate"] = bitrate
+    row["videoBitrate"] = bitrate
+    return row
+
+
 def shim_media_with_edition(file_path, height, dynamic_range="SDR", edition=""):
     row = shim_media(file_path, height, dynamic_range)
     if edition:
@@ -87,6 +94,80 @@ def test_shim_default_protected_height_is_anything_above_1080():
     assert shim.is_protected_height(1440)
     assert shim.is_protected_height(2160)
     assert shim.VERSION_INDEX_MAX_AGE_S == 60
+    assert shim.CACHE_TTL_S == 60
+
+
+def test_shim_exposes_fast_protected_waterfall_entrypoint():
+    shim = load_shim()
+
+    assert callable(shim.protected_waterfall_decision)
+
+
+def test_shim_identifies_1080_remux_by_configured_bitrate():
+    shim = load_shim()
+    current = shim.build_media_info(shim_media_with_bitrate("/media/movie-1080-sdr.mkv", 1080, 25_000, "SDR"))
+    ordinary = shim.build_media_info(shim_media_with_bitrate("/media/movie-1080-sdr-small.mkv", 1080, 12_000, "SDR"))
+
+    assert shim.REMUX_1080_MIN_BITRATE_KBPS == 25_000
+    assert shim.is_1080_remux_like(current)
+    assert not shim.is_1080_remux_like(ordinary)
+
+
+def test_shim_does_not_use_generic_cache_before_actual_height_proof(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    input_file = tmp_path / "movie-open-matte-source.mkv"
+    cached_fallback = tmp_path / "stale-cross-edition-cache.mkv"
+    input_file.write_text("source\n", encoding="utf-8")
+    cached_fallback.write_text("stale fallback\n", encoding="utf-8")
+    cache_path = tmp_path / "cache.json"
+    index_path = tmp_path / "plex-version-index.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    str(input_file): {
+                        "ts": shim.time.time(),
+                        "rating_key": "rk-stale",
+                        "fallback_file": str(cached_fallback),
+                        "fallback_height": 720,
+                        "fallback_dr": "SDR",
+                        "fallback_max_stream_index": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "generated_at_epoch": int(shim.time.time()),
+                "items": [{"ratingKey": "rk-1", "Media": [shim_media(str(input_file), 1440, "SDR")]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(shim, "CACHE_FILE", str(cache_path), raising=False)
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", True, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", False, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_NO_FALLBACK", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", str(input_file), "-f", "dash", "chunk"])
+    monkeypatch.setattr(
+        shim,
+        "exec_real_transcoder",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generic cache must not bypass actual-height protected proof")),
+    )
+
+    with pytest.raises(SystemExit):
+        shim.main()
 
 
 def test_shim_blocks_cinematic_4kish_source_without_verified_fallback(monkeypatch, tmp_path):

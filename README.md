@@ -138,9 +138,12 @@ Example:
   "PLEX_HTTP_TIMEOUT_S": 0.35,
   "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
   "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
+  "CACHE_TTL_S": 60,
   "VERSION_INDEX_FILE": "/var/lib/downshiftarr/cache/plex-version-index.json",
   "ALLOW_LIVE_LOOKUP_ON_INDEX_MISS": true,
   "VERSION_INDEX_MAX_AGE_S": 60,
+  "PROTECTED_SOURCE_MIN_HEIGHT": 1081,
+  "REMUX_1080_MIN_BITRATE_KBPS": 25000,
   "FOUR_K_TRANSCODE_ALLOWED": false,
   "REQUIRE_FRESH_INDEX_FOR_4K": true,
   "DECISION_BUDGET_MS": 100,
@@ -171,6 +174,7 @@ Key settings youâ€™ll care about first:
 - `SHADOW_MODE` - records would-be swaps and immediately passes through to the real transcoder for non-4K decisions. It is overridden for 4K because 4K transcode is never allowed.
 - `ENABLE_SECTION_SCAN_FALLBACK` â€“ default `True`; if Plex search returns no file-name results, the shim tries the matching library section by location and exact `Part` path. This keeps version lookup working for libraries whose search index hides version filenames.
 - `PROTECTED_SOURCE_MIN_HEIGHT` - default `1081`; `MAX_ALLOWED_HEIGHT` remains a compatibility alias.
+- `REMUX_1080_MIN_BITRATE_KBPS` - default `25000`; 1080p sources at or above this bitrate are remux-like for waterfall preference. They are not hard-blocked unless `HARD_PROTECT_1080_REMUX` is explicitly enabled.
 - `MAX_FALLBACK_HEIGHT` â€“ default `1080`.
 - `PREFER_HEIGHTS` â€“ default `(1080, 720, 576, 480, 360)`.
 - `FALLBACK_SDR_ONLY` â€“ default `True` (recommended).
@@ -182,7 +186,7 @@ Key settings youâ€™ll care about first:
 There are additional options for:
 
 - stream layout safety checks (`REQUIRE_STREAM_INDEX_COMPATIBILITY`)
-- caching (`ENABLE_CACHE`, `CACHE_TTL_S`)
+- caching (`ENABLE_CACHE`, `CACHE_TTL_S`, default `60` seconds for Bragi-aligned decisions)
 - performance tweaks (`STRIP_HDR_TONEMAP_FILTERS`, `REMOVE_BITRATE_LIMITS`)
 
 Keep these values aligned with `Downshiftarr.env` so both layers agree on what to enforce.

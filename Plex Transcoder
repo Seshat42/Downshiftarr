@@ -339,6 +339,24 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "SHADOW_MODE": bool,
 }
 
+_CONFIG_INT_RANGES: Dict[str, Tuple[int, int]] = {
+    "PLEX_SEARCH_LIMIT_PER_HUB": (1, 500),
+    "SECTION_SCAN_MAX_ITEMS": (1, 100_000),
+    "VERSION_INDEX_MAX_AGE_S": (1, 86_400),
+    "PROTECTED_SOURCE_MIN_HEIGHT": (2, 8192),
+    "MAX_ALLOWED_HEIGHT": (2, 8192),
+    "MAX_FALLBACK_HEIGHT": (144, 2160),
+    "REMUX_1080_MIN_BITRATE_KBPS": (1, 500_000),
+    "WATERFALL_MIN_HEIGHT": (144, 1080),
+    "CACHE_TTL_S": (0, 86_400),
+    "MAX_CACHE_BYTES": (4096, 50_000_000),
+    "DECISION_BUDGET_MS": (1, 5000),
+}
+
+_CONFIG_FLOAT_RANGES: Dict[str, Tuple[float, float]] = {
+    "PLEX_HTTP_TIMEOUT_S": (0.01, 30.0),
+}
+
 
 def _coerce_config_value(key: str, value: object) -> object:
     expected = _CONFIG_SCHEMA[key]
@@ -365,6 +383,28 @@ def _coerce_config_value(key: str, value: object) -> object:
             raise RuntimeError("Shim config key REAL_TRANSCODER_SUFFIX must not be empty")
         return value
     raise RuntimeError(f"Unsupported shim config schema type for {key}")
+
+
+def _validate_safe_config_ranges() -> None:
+    errors: List[str] = []
+    for key, (minimum, maximum) in _CONFIG_INT_RANGES.items():
+        value = globals().get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum or value > maximum:
+            errors.append(f"{key} outside safe range {minimum}..{maximum}")
+    for key, (minimum, maximum) in _CONFIG_FLOAT_RANGES.items():
+        value = globals().get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) < minimum or float(value) > maximum:
+            errors.append(f"{key} outside safe range {minimum}..{maximum}")
+    if MAX_FALLBACK_HEIGHT >= PROTECTED_SOURCE_MIN_HEIGHT:
+        errors.append("MAX_FALLBACK_HEIGHT must stay below PROTECTED_SOURCE_MIN_HEIGHT")
+    if not PREFER_HEIGHTS:
+        errors.append("PREFER_HEIGHTS must not be empty")
+    for height in PREFER_HEIGHTS:
+        if isinstance(height, bool) or not isinstance(height, int) or height < WATERFALL_MIN_HEIGHT or height > MAX_FALLBACK_HEIGHT:
+            errors.append("PREFER_HEIGHTS contains a height outside safe fallback range")
+            break
+    if errors:
+        raise RuntimeError("Shim config outside safe range: " + "; ".join(errors))
 
 
 def _reject_unsafe_parent_dirs(config_path: str) -> None:
@@ -473,6 +513,7 @@ def _load_external_config() -> None:
         globals()["MAX_ALLOWED_HEIGHT"] = globals()["PROTECTED_SOURCE_MIN_HEIGHT"]
     elif "MAX_ALLOWED_HEIGHT" in loaded_keys:
         globals()["PROTECTED_SOURCE_MIN_HEIGHT"] = globals()["MAX_ALLOWED_HEIGHT"]
+    _validate_safe_config_ranges()
 
 
 _load_external_config()
@@ -1229,6 +1270,103 @@ def plex_find_item_by_file_via_sections(file_path: str) -> Optional[Tuple[str, d
     return None
 
 
+def _index_freshness_status(data: dict) -> Optional[str]:
+    generated = safe_int(data.get("generated_at_epoch"))
+    if VERSION_INDEX_MAX_AGE_S > 0:
+        if generated is None:
+            return "missing_generated_at"
+        age = time.time() - generated
+        if age < 0:
+            return "future_generated_at"
+        if age > VERSION_INDEX_MAX_AGE_S:
+            return "stale"
+    return None
+
+
+def _v2_streams_from_row(row: dict, height: Optional[int]) -> List[dict]:
+    raw_streams = row.get("streams") or row.get("Streams") or row.get("Stream")
+    if isinstance(raw_streams, list) and all(isinstance(stream, dict) for stream in raw_streams):
+        return list(raw_streams)
+    max_stream_index = safe_int(row.get("max_stream_index") or row.get("maxStreamIndex") or row.get("max_stream"))
+    streams: List[dict] = [{"streamType": 1, "index": 0, "height": height}]
+    if max_stream_index is not None and max_stream_index > 0:
+        for index in range(1, max_stream_index + 1):
+            streams.append({"streamType": 2, "index": index})
+    return streams
+
+
+def _v2_media_from_version(row: dict, inherited_edition: str) -> Optional[dict]:
+    if not isinstance(row, dict):
+        return None
+    file_path = str(row.get("file") or row.get("part_path") or row.get("path") or "").strip()
+    if not file_path:
+        return None
+    height = safe_int(row.get("height") or row.get("video_height") or row.get("videoHeight"))
+    dynamic_range = str(row.get("dynamic_range") or row.get("videoDynamicRange") or row.get("dynamicRange") or "UNKNOWN")
+    bitrate = safe_int(row.get("bitrate_kbps") or row.get("bitrate") or row.get("videoBitrate") or row.get("videoBitrateKbps"))
+    edition_key = str(row.get("edition_key") or row.get("edition") or row.get("editionTitle") or inherited_edition or "")
+    part: dict = {"file": file_path, "Stream": _v2_streams_from_row(row, height)}
+    if bitrate:
+        part["bitrate"] = bitrate
+    media: dict = {
+        "height": height,
+        "videoHeight": height,
+        "videoResolution": str(height) if height else "",
+        "videoDynamicRange": dynamic_range,
+        "Part": [part],
+    }
+    if bitrate:
+        media["bitrate"] = bitrate
+        media["videoBitrate"] = bitrate
+    if edition_key:
+        media["editionTitle"] = edition_key
+    return media
+
+
+def _v2_entry_to_item(entry: dict) -> Optional[dict]:
+    if not isinstance(entry, dict):
+        return None
+    rating_key = entry.get("rating_key") or entry.get("ratingKey") or entry.get("rating_key_id")
+    if not rating_key:
+        return None
+    inherited_edition = str(entry.get("edition_key") or entry.get("edition") or entry.get("editionTitle") or "")
+    versions = entry.get("versions") or entry.get("media") or entry.get("Media")
+    if not isinstance(versions, list):
+        return None
+    medias = [media for row in versions if (media := _v2_media_from_version(row, inherited_edition))]
+    if not medias:
+        return None
+    item: dict = {"ratingKey": str(rating_key), "Media": medias}
+    if inherited_edition:
+        item["editionTitle"] = inherited_edition
+    return item
+
+
+def _find_v1_index_item(items: object, file_path: str) -> Optional[Tuple[str, dict]]:
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rating_key = item.get("ratingKey") or item.get("rating_key")
+        if rating_key and _item_has_file(item, file_path):
+            return str(rating_key), item
+    return None
+
+
+def _find_v2_index_item(data: dict, file_path: str) -> Optional[Tuple[str, dict]]:
+    paths = data.get("paths") or data.get("path_index")
+    if not isinstance(paths, dict):
+        return None
+    entry = paths.get(file_path) or paths.get(os.path.normpath(file_path))
+    if not isinstance(entry, dict):
+        return None
+    item = _v2_entry_to_item(entry)
+    if not item or not _item_has_file(item, file_path):
+        return None
+    return str(item["ratingKey"]), item
+
+
 def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[str, dict]]:
     global VERSION_INDEX_LAST_STATUS
     index_path = (VERSION_INDEX_FILE or "").strip()
@@ -1242,7 +1380,30 @@ def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[s
         VERSION_INDEX_LAST_STATUS = "unreadable"
         log("DEBUG", f"Ignoring unreadable version index: {exc}")
         return None
-    if not isinstance(data, dict) or data.get("version") != 1:
+    if not isinstance(data, dict):
+        VERSION_INDEX_LAST_STATUS = "invalid"
+        return None
+    version = safe_int(data.get("version"))
+    if version == 2:
+        paths = data.get("paths") or data.get("path_index")
+        if not paths and not data.get("items"):
+            VERSION_INDEX_LAST_STATUS = "empty"
+            return None
+        freshness_status = _index_freshness_status(data)
+        if freshness_status:
+            VERSION_INDEX_LAST_STATUS = freshness_status
+            return None
+        found_v2 = _find_v2_index_item(data, file_path)
+        if found_v2:
+            VERSION_INDEX_LAST_STATUS = "hit_v2"
+            return found_v2
+        found_v1 = _find_v1_index_item(data.get("items"), file_path)
+        if found_v1:
+            VERSION_INDEX_LAST_STATUS = "hit_v1_fallback"
+            return found_v1
+        VERSION_INDEX_LAST_STATUS = "miss"
+        return None
+    if version != 1:
         VERSION_INDEX_LAST_STATUS = "invalid"
         return None
     items = data.get("items") or []
@@ -1252,25 +1413,14 @@ def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[s
     if not items:
         VERSION_INDEX_LAST_STATUS = "empty"
         return None
-    generated = safe_int(data.get("generated_at_epoch"))
-    if VERSION_INDEX_MAX_AGE_S > 0:
-        if generated is None:
-            VERSION_INDEX_LAST_STATUS = "missing_generated_at"
-            return None
-        age = time.time() - generated
-        if age < 0:
-            VERSION_INDEX_LAST_STATUS = "future_generated_at"
-            return None
-        if age > VERSION_INDEX_MAX_AGE_S:
-            VERSION_INDEX_LAST_STATUS = "stale"
-            return None
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        rating_key = item.get("ratingKey") or item.get("rating_key")
-        if rating_key and _item_has_file(item, file_path):
-            VERSION_INDEX_LAST_STATUS = "hit"
-            return str(rating_key), item
+    freshness_status = _index_freshness_status(data)
+    if freshness_status:
+        VERSION_INDEX_LAST_STATUS = freshness_status
+        return None
+    found_v1 = _find_v1_index_item(items, file_path)
+    if found_v1:
+        VERSION_INDEX_LAST_STATUS = "hit"
+        return found_v1
     VERSION_INDEX_LAST_STATUS = "miss"
     return None
 
@@ -1577,6 +1727,31 @@ def protected_waterfall_decision(
     return rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
 
 
+def attempt_protected_waterfall_fast_path(
+    args: List[str],
+    input_idx: int,
+    input_file: str,
+    rating_key: str,
+    full_item: dict,
+    current: MediaInfo,
+    required_max_stream: Optional[int],
+    decision_start_ms: float,
+) -> Optional[List[str]]:
+    """Use fresh Plex Versions proof for protected sources before generic lookup logic."""
+    if not is_protected_source(current):
+        return None
+    return protected_waterfall_decision(
+        args,
+        input_idx,
+        input_file,
+        rating_key,
+        full_item,
+        current,
+        required_max_stream,
+        decision_start_ms,
+    )
+
+
 # =====================================================================================
 # Argument rewriting / optimization
 # =====================================================================================
@@ -1748,6 +1923,21 @@ def main() -> None:
     preverified_index_found: Optional[Tuple[str, dict]] = plex_find_item_by_file_via_version_index(input_file)
     preverified_current = find_current_media(preverified_index_found[1], input_file) if preverified_index_found else None
     preverified_source_protected = bool(preverified_current and is_protected_source(preverified_current))
+
+    if preverified_index_found and preverified_current and preverified_source_protected:
+        final_args = attempt_protected_waterfall_fast_path(
+            args,
+            input_idx,
+            input_file,
+            preverified_index_found[0],
+            preverified_index_found[1],
+            preverified_current,
+            req_stream_max,
+            decision_start_ms,
+        )
+        if final_args is not None:
+            exec_real_transcoder(real, final_args)
+            return
 
     # Cache fast-path. Only trust the generic fallback cache after a fresh
     # version index proves the source is not protected; protected decisions must

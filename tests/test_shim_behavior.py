@@ -62,6 +62,37 @@ def shim_media_with_streams(file_path, height, dynamic_range="SDR", streams=None
     return row
 
 
+def compact_v2_index(target_file, fallback_file, *, target_height=2160, fallback_height=1080):
+    return {
+        "version": 2,
+        "generated_at_epoch": int(time.time()),
+        "paths": {
+            target_file: {
+                "rating_key": "9001",
+                "edition_key": "",
+                "versions": [
+                    {
+                        "file": target_file,
+                        "height": target_height,
+                        "dynamic_range": "HDR",
+                        "bitrate_kbps": 58000,
+                        "max_stream_index": 1,
+                        "edition_key": "",
+                    },
+                    {
+                        "file": fallback_file,
+                        "height": fallback_height,
+                        "dynamic_range": "SDR",
+                        "bitrate_kbps": 12000,
+                        "max_stream_index": 1,
+                        "edition_key": "",
+                    },
+                ],
+            }
+        },
+    }
+
+
 def test_shim_fallback_selection_prefers_sdr_1080(monkeypatch):
     shim = load_shim()
     monkeypatch.setattr(shim, "MAX_ALLOWED_HEIGHT", 2000)
@@ -101,6 +132,7 @@ def test_shim_exposes_fast_protected_waterfall_entrypoint():
     shim = load_shim()
 
     assert callable(shim.protected_waterfall_decision)
+    assert callable(shim.attempt_protected_waterfall_fast_path)
 
 
 def test_shim_identifies_1080_remux_by_configured_bitrate():
@@ -862,6 +894,69 @@ def test_shim_uses_precomputed_version_index_before_plex_search(monkeypatch, tmp
     assert found[0] == "9001"
 
 
+def test_shim_uses_compact_v2_version_index_before_plex_search(monkeypatch, tmp_path):
+    shim = load_shim()
+    target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
+    fallback = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"
+    index_path = tmp_path / "plex-version-index-v2.json"
+    index_path.write_text(json.dumps(compact_v2_index(target, fallback)), encoding="utf-8")
+    index_path.chmod(0o660)
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "plex_get_json", lambda path, params: (_ for _ in ()).throw(AssertionError(path)))
+
+    found = shim.plex_find_item_by_file(target)
+
+    assert found is not None
+    rating_key, item = found
+    assert rating_key == "9001"
+    assert shim.VERSION_INDEX_LAST_STATUS == "hit_v2"
+    current = shim.find_current_media(item, target)
+    best = shim.pick_best_fallback(item, current, required_max_stream=1)
+    assert current.height == 2160
+    assert best.file_path == fallback
+    assert best.height == 1080
+
+
+def test_shim_falls_back_to_v1_index_when_v2_paths_miss(monkeypatch, tmp_path):
+    shim = load_shim()
+    target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
+    fallback = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"
+    index_path = tmp_path / "plex-version-index-mixed.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "generated_at_epoch": int(time.time()),
+                "paths": {
+                    "/mnt/media/Movies/Other/Other - 2160p HDR.mkv": {
+                        "rating_key": "other",
+                        "versions": [],
+                    }
+                },
+                "items": [
+                    {
+                        "ratingKey": "9001",
+                        "Media": [
+                            shim_media(target, 2160, "HDR"),
+                            shim_media(fallback, 1080, "SDR"),
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+
+    found = shim.plex_find_item_by_file_via_version_index(target)
+
+    assert found is not None
+    assert found[0] == "9001"
+    assert shim.VERSION_INDEX_LAST_STATUS == "hit_v1_fallback"
+
+
 def test_shim_version_index_reports_empty_and_stale(monkeypatch, tmp_path):
     shim = load_shim()
     target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
@@ -892,6 +987,26 @@ def test_shim_version_index_reports_empty_and_stale(monkeypatch, tmp_path):
 
     assert shim.plex_find_item_by_file_via_version_index(target) is None
     assert shim.VERSION_INDEX_LAST_STATUS == "stale"
+
+
+def test_shim_rejects_unsafe_numeric_config_ranges(monkeypatch, tmp_path):
+    config_path = tmp_path / "shim-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "PROTECTED_SOURCE_MIN_HEIGHT": 0,
+                "DECISION_BUDGET_MS": 0,
+                "CACHE_TTL_S": -1,
+                "REMUX_1080_MIN_BITRATE_KBPS": -10,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    monkeypatch.setenv("DOWNSHIFTARR_SHIM_CONFIG", str(config_path))
+
+    with pytest.raises(RuntimeError, match="outside safe range"):
+        load_shim()
 
 
 def test_shim_records_sanitized_aggregate_telemetry(monkeypatch, tmp_path):

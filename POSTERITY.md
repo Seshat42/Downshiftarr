@@ -192,3 +192,10 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: How should 1080 remux-like sources be identified? A: Keep 1080 remux as waterfall-by-default and use `REMUX_1080_MIN_BITRATE_KBPS=25000` as the initial configurable bitrate threshold.
 - Q: Should `Downshiftarr.py` share the same policy contract as the shim? A: Yes. The Tautulli script and shim should agree on protected height, remux-like detection, fallback order, and same-item/same-edition boundaries.
 - Implementation note: the shim now exposes a dedicated `protected_waterfall_decision` entrypoint, keeps generic fallback-cache use behind fresh actual-height proof, defaults `CACHE_TTL_S=60`, and treats bitrate-derived 1080 remux-like transcodes as waterfall candidates without enabling hard block by default.
+
+## 2026-05-30 Compact Index And Config Guard Follow-Up
+
+- Q: Should the shim add a compact Plex Versions index format? A: Yes. The operator selected compact v2 with v1 fallback for one rollout so the hot path can avoid scanning broad item-shaped records while deployed Bragi evidence remains readable during transition.
+- Q: How should unsafe config ranges behave? A: Fail closed for protected playback. The shim now rejects unsafe numeric ranges at config load rather than silently accepting drift; protected decisions still use source/version proof and the non-protected path keeps the existing pass-through-on-uncertainty UX policy.
+- Q: Should 1080 remux-like sources become hard-protected? A: No. The default remains waterfall-only; hard protection stays behind explicit config.
+- Implementation note: the shim can now load compact v2 indexes keyed by part path, converts them into the existing same-item/same-edition decision model, records `hit_v2` telemetry, falls back to v1 `items` when needed, and exposes `attempt_protected_waterfall_fast_path` before generic lookup/cache logic.

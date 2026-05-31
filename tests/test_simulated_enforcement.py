@@ -176,6 +176,19 @@ def test_fallback_selection_prefers_client_friendly_audio_at_same_height():
     assert pick_best_fallback_media_index(item, "current-4k-hdr", 2160, "HDR") == 2
 
 
+def test_fetch_library_item_uses_explicit_metadata_api_path_first():
+    calls = []
+
+    class FakePlex:
+        def fetchItem(self, key):
+            calls.append(key)
+            return attr(media=[])
+
+    Downshiftarr.fetch_library_item(FakePlex(), "123")
+
+    assert calls == ["/library/metadata/123"]
+
+
 def test_plex_terminate_session_uses_headers_not_token_query(monkeypatch):
     captured = {}
 

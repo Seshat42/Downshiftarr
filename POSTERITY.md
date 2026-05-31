@@ -199,3 +199,9 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: How should unsafe config ranges behave? A: Fail closed for protected playback. The shim now rejects unsafe numeric ranges at config load rather than silently accepting drift; protected decisions still use source/version proof and the non-protected path keeps the existing pass-through-on-uncertainty UX policy.
 - Q: Should 1080 remux-like sources become hard-protected? A: No. The default remains waterfall-only; hard protection stays behind explicit config.
 - Implementation note: the shim can now load compact v2 indexes keyed by part path, converts them into the existing same-item/same-edition decision model, records `hit_v2` telemetry, falls back to v1 `items` when needed, and exposes `attempt_protected_waterfall_fast_path` before generic lookup/cache logic.
+
+## 2026-05-30 Plex API Authoritative Waterfall Decision
+
+- Q: Should the shim rely on a fresh index as the authoritative Versions source? A: No. The operator selected Plex API always. The compact v2 index is only an exact path-to-`ratingKey` locator; every waterfall swap must use `/library/metadata/{ratingKey}` as the current authoritative Plex Versions list.
+- Q: Should v1 index compatibility remain? A: No. Older v1 item-shaped indexes are now rejected and must be regenerated as compact v2 locators before Bragi proof can pass.
+- Implementation note: basename Plex search was removed from the swap authorization path. If the v2 locator misses, the shim may use a bounded section-location exact `Part.file` lookup to find the item, then must fetch `/library/metadata/{ratingKey}` before selecting `1080 SDR -> 720 -> 480 -> 360`.

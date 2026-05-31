@@ -46,6 +46,7 @@ class FakePlexServer:
         self._sessions = sessions or []
         self._clients = clients or []
         self._named_clients = named_clients or {}
+        self.fetch_calls: list[Any] = []
 
     def sessions(self) -> list[Any]:
         return list(self._sessions)
@@ -57,3 +58,11 @@ class FakePlexServer:
         if title not in self._named_clients:
             raise KeyError(title)
         return self._named_clients[title]
+
+    def fetchItem(self, key: Any) -> Any:
+        self.fetch_calls.append(key)
+        rating_key = str(key).removeprefix("/library/metadata/")
+        for item in self._sessions:
+            if str(getattr(item, "ratingKey", "")) == rating_key:
+                return item
+        raise KeyError(key)

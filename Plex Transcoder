@@ -99,19 +99,6 @@ PLEX_TOKEN_ENV_VARS: Tuple[str, ...] = (
 # Network timeout for Plex API calls (seconds). Keep this small to avoid delaying playback.
 PLEX_HTTP_TIMEOUT_S: float = 0.75
 
-# Search endpoints to try (newer Plex typically supports /hubs/search).
-# We try them in order and fall back if one fails.
-PLEX_SEARCH_ENDPOINTS: Tuple[str, ...] = (
-    "/hubs/search",
-    "/hubs/search/",
-    "/search",
-    "/search/",
-)
-
-# Max items returned per hub for /hubs/search.
-# If your libraries are huge and you have generic file names, raising this can help.
-PLEX_SEARCH_LIMIT_PER_HUB: int = 25
-
 # Some Plex libraries do not return file-name searches for versioned media even
 # though `/library/sections/<key>/all` contains the exact Part file. Keep this
 # fallback bounded and section-location scoped so the shim can still find
@@ -183,9 +170,9 @@ REMUX_1080_MIN_BITRATE_KBPS: int = 25_000
 # This helps catch cases like 1080p HDR sources when the metadata response is thin.
 TREAT_TONEMAP_ARGS_AS_HDR: bool = True
 
-# Speed optimization: avoid fetching the full `/library/metadata/<ratingKey>` payload unless the search result (or args) indicates the source might be protected.
-#
-# This saves one Plex API call for the *common* case (non-protected transcodes).
+# Speed optimization: avoid fetching the full `/library/metadata/<ratingKey>` payload
+# only when we can immediately pass through. Any swap/waterfall decision must use
+# fresh Plex metadata as the authoritative source of available Versions.
 FAST_PATH_SKIP_FULL_METADATA_IF_UNPROTECTED: bool = True
 
 # If a client is still transcoding an already downshifted SDR source, keep moving
@@ -301,7 +288,6 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "PLEX_URL": str,
     "PLEX_TOKEN_FILE": str,
     "PLEX_HTTP_TIMEOUT_S": float,
-    "PLEX_SEARCH_LIMIT_PER_HUB": int,
     "ENABLE_SECTION_SCAN_FALLBACK": bool,
     "SECTION_SCAN_MAX_ITEMS": int,
     "VERSION_INDEX_FILE": str,
@@ -340,7 +326,6 @@ _CONFIG_SCHEMA: Dict[str, type] = {
 }
 
 _CONFIG_INT_RANGES: Dict[str, Tuple[int, int]] = {
-    "PLEX_SEARCH_LIMIT_PER_HUB": (1, 500),
     "SECTION_SCAN_MAX_ITEMS": (1, 100_000),
     "VERSION_INDEX_MAX_AGE_S": (1, 86_400),
     "PROTECTED_SOURCE_MIN_HEIGHT": (2, 8192),
@@ -868,7 +853,7 @@ def media_dynamic_range(media: dict) -> str:
         if v:
             return str(v).upper().strip()
 
-    # Stream inspection fallback (requires full metadata; /hubs/search may not include streams)
+    # Stream inspection fallback requires full metadata; locator rows may be thin.
     try:
         parts = media.get("Part") or []
         if isinstance(parts, dict):
@@ -1171,19 +1156,6 @@ def _save_cache(entries: Dict[str, CacheEntry]) -> None:
 # =====================================================================================
 
 
-def _iter_hub_items(search_json: dict) -> Iterable[dict]:
-    mc = (search_json or {}).get("MediaContainer", {})
-    hubs = mc.get("Hub") or []
-    if isinstance(hubs, dict):
-        hubs = [hubs]
-    for hub in hubs:
-        md = hub.get("Metadata") or []
-        if isinstance(md, dict):
-            md = [md]
-        for item in md:
-            yield item
-
-
 def _as_list(value) -> List[dict]:
     if not value:
         return []
@@ -1342,18 +1314,6 @@ def _v2_entry_to_item(entry: dict) -> Optional[dict]:
     return item
 
 
-def _find_v1_index_item(items: object, file_path: str) -> Optional[Tuple[str, dict]]:
-    if not isinstance(items, list):
-        return None
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        rating_key = item.get("ratingKey") or item.get("rating_key")
-        if rating_key and _item_has_file(item, file_path):
-            return str(rating_key), item
-    return None
-
-
 def _find_v2_index_item(data: dict, file_path: str) -> Optional[Tuple[str, dict]]:
     paths = data.get("paths") or data.get("path_index")
     if not isinstance(paths, dict):
@@ -1384,43 +1344,24 @@ def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[s
         VERSION_INDEX_LAST_STATUS = "invalid"
         return None
     version = safe_int(data.get("version"))
-    if version == 2:
-        paths = data.get("paths") or data.get("path_index")
-        if not paths and not data.get("items"):
-            VERSION_INDEX_LAST_STATUS = "empty"
-            return None
-        freshness_status = _index_freshness_status(data)
-        if freshness_status:
-            VERSION_INDEX_LAST_STATUS = freshness_status
-            return None
-        found_v2 = _find_v2_index_item(data, file_path)
-        if found_v2:
-            VERSION_INDEX_LAST_STATUS = "hit_v2"
-            return found_v2
-        found_v1 = _find_v1_index_item(data.get("items"), file_path)
-        if found_v1:
-            VERSION_INDEX_LAST_STATUS = "hit_v1_fallback"
-            return found_v1
-        VERSION_INDEX_LAST_STATUS = "miss"
+    if version == 1:
+        VERSION_INDEX_LAST_STATUS = "unsupported_v1"
         return None
-    if version != 1:
+    if version != 2:
         VERSION_INDEX_LAST_STATUS = "invalid"
         return None
-    items = data.get("items") or []
-    if not isinstance(items, list):
-        VERSION_INDEX_LAST_STATUS = "invalid"
-        return None
-    if not items:
+    paths = data.get("paths") or data.get("path_index")
+    if not paths:
         VERSION_INDEX_LAST_STATUS = "empty"
         return None
     freshness_status = _index_freshness_status(data)
     if freshness_status:
         VERSION_INDEX_LAST_STATUS = freshness_status
         return None
-    found_v1 = _find_v1_index_item(items, file_path)
-    if found_v1:
-        VERSION_INDEX_LAST_STATUS = "hit"
-        return found_v1
+    found_v2 = _find_v2_index_item(data, file_path)
+    if found_v2:
+        VERSION_INDEX_LAST_STATUS = "hit_v2"
+        return found_v2
     VERSION_INDEX_LAST_STATUS = "miss"
     return None
 
@@ -1432,53 +1373,11 @@ def plex_find_item_by_file(file_path: str) -> Optional[Tuple[str, dict]]:
     indexed = plex_find_item_by_file_via_version_index(file_path)
     if indexed:
         return indexed
-    if VERSION_INDEX_LAST_STATUS == "miss" and not ALLOW_LIVE_LOOKUP_ON_INDEX_MISS:
-        log("DEBUG", "Version index miss and live lookup is disabled; passing through")
+    if not ALLOW_LIVE_LOOKUP_ON_INDEX_MISS:
+        log("DEBUG", f"Version index status={VERSION_INDEX_LAST_STATUS} and live lookup is disabled; passing through")
         return None
     if active_decision_budget_exhausted():
         return None
-
-    # The Plex search API expects a query string; using the basename keeps it fast.
-    # We also try a "title-ish" cleaned basename as a second attempt.
-    base = os.path.basename(file_path)
-    base_no_ext = os.path.splitext(base)[0]
-    cleaned = re.sub(r"[\[\(].*?[\]\)]", " ", base_no_ext)  # remove [...] and (...) tags
-    cleaned = re.sub(r"[._]+", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    query_candidates = [base_no_ext]
-    if cleaned and cleaned.lower() != base_no_ext.lower():
-        query_candidates.append(cleaned)
-
-    for query in query_candidates:
-        for endpoint in PLEX_SEARCH_ENDPOINTS:
-            if active_decision_budget_exhausted():
-                return None
-            params = {
-                "query": query,
-                "limit": str(PLEX_SEARCH_LIMIT_PER_HUB),
-            }
-            data = plex_get_json(endpoint, params)
-            if not data:
-                continue
-
-            for item in _iter_hub_items(data):
-                if active_decision_budget_exhausted():
-                    return None
-                rk = item.get("ratingKey")
-                if not rk:
-                    continue
-
-                medias = item.get("Media") or []
-                if isinstance(medias, dict):
-                    medias = [medias]
-                for m in medias:
-                    parts = m.get("Part") or []
-                    if isinstance(parts, dict):
-                        parts = [parts]
-                    for p in parts:
-                        if p.get("file") == file_path:
-                            return str(rk), item
 
     return plex_find_item_by_file_via_sections(file_path)
 
@@ -1706,7 +1605,7 @@ def protected_waterfall_decision(
 
     args[input_idx] = fallback.file_path
     swapped_to_sdr = fallback.dyn_range_class == "SDR"
-    outcome = "live_lookup_waterfall_swap" if VERSION_INDEX_LAST_STATUS != "hit" else "waterfall_swap"
+    outcome = "waterfall_swap" if VERSION_INDEX_LAST_STATUS.startswith("hit") else "live_lookup_waterfall_swap"
     log(
         "INFO",
         f"{outcome}: {current.height}p/{current.dyn_range_class} -> {fallback.height}p/{fallback.dyn_range_class} "
@@ -1737,16 +1636,28 @@ def attempt_protected_waterfall_fast_path(
     required_max_stream: Optional[int],
     decision_start_ms: float,
 ) -> Optional[List[str]]:
-    """Use fresh Plex Versions proof for protected sources before generic lookup logic."""
+    """Use v2 locator proof, then authoritative Plex metadata, before generic lookup logic."""
     if not is_protected_source(current):
+        return None
+    if budget_exhausted(decision_start_ms):
+        block_4k_transcode("decision budget exhausted before metadata", decision_start_ms)
+    full_metadata = plex_fetch_full_metadata(rating_key)
+    if budget_exhausted(decision_start_ms):
+        block_4k_transcode("decision budget exhausted during metadata", decision_start_ms)
+    if not full_metadata:
+        block_4k_transcode("authoritative Plex metadata unavailable", decision_start_ms)
+    authoritative_current = find_current_media(full_metadata, input_file)
+    if not authoritative_current:
+        block_4k_transcode("current media absent from authoritative Plex metadata", decision_start_ms)
+    if not is_protected_source(authoritative_current):
         return None
     return protected_waterfall_decision(
         args,
         input_idx,
         input_file,
         rating_key,
-        full_item,
-        current,
+        full_metadata,
+        authoritative_current,
         required_max_stream,
         decision_start_ms,
     )
@@ -1981,8 +1892,7 @@ def main() -> None:
         exec_real_transcoder(real, args)
         return
 
-    # Lookup item by file path.
-    found_from_preverified_index = preverified_index_found is not None
+    # Lookup item by exact file path.
     found = preverified_index_found or plex_find_item_by_file(input_file)
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted during Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
@@ -2034,13 +1944,10 @@ def main() -> None:
         exec_real_transcoder(real, args)
         return
 
-    # Fetch full metadata (streams / dynamic range). This is what makes swap decisions accurate.
-    full_item = None
-    search_medias = _as_list(search_item.get("Media"))
-    if find_current_media(search_item, input_file) and (found_from_preverified_index or len(search_medias) > 1):
-        full_item = search_item
-    else:
-        full_item = plex_fetch_full_metadata(rating_key)
+    # Fetch authoritative metadata (streams / dynamic range / sibling versions).
+    # The v2 index is only a fast exact-path locator; every swap decision must use
+    # Plex's current `/library/metadata/<ratingKey>` response.
+    full_item = plex_fetch_full_metadata(rating_key)
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted during full metadata fetch; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)

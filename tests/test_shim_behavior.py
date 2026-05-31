@@ -62,13 +62,13 @@ def shim_media_with_streams(file_path, height, dynamic_range="SDR", streams=None
     return row
 
 
-def compact_v2_index(target_file, fallback_file, *, target_height=2160, fallback_height=1080):
+def compact_v2_index(target_file, fallback_file, *, target_height=2160, fallback_height=1080, rating_key="9001"):
     return {
         "version": 2,
         "generated_at_epoch": int(time.time()),
         "paths": {
             target_file: {
-                "rating_key": "9001",
+                "rating_key": rating_key,
                 "edition_key": "",
                 "versions": [
                     {
@@ -175,13 +175,7 @@ def test_shim_does_not_use_generic_cache_before_actual_height_proof(monkeypatch,
         encoding="utf-8",
     )
     index_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "generated_at_epoch": int(shim.time.time()),
-                "items": [{"ratingKey": "rk-1", "Media": [shim_media(str(input_file), 1440, "SDR")]}],
-            }
-        ),
+        json.dumps(compact_v2_index(str(input_file), str(cached_fallback), target_height=1440, fallback_height=720, rating_key="rk-1")),
         encoding="utf-8",
     )
 
@@ -191,6 +185,7 @@ def test_shim_does_not_use_generic_cache_before_actual_height_proof(monkeypatch,
     monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", False, raising=False)
     monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_NO_FALLBACK", False, raising=False)
     monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "plex_fetch_full_metadata", lambda rating_key: {"Media": [shim_media(str(input_file), 1440, "SDR")]})
     monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", str(input_file), "-f", "dash", "chunk"])
     monkeypatch.setattr(
         shim,
@@ -234,9 +229,14 @@ def test_shim_uses_live_lookup_for_protected_index_miss(monkeypatch, tmp_path):
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": int(shim.time.time()),
-                "items": [{"ratingKey": "other", "Media": [shim_media("/media/other.mkv", 1080, "SDR")]}],
+                "paths": {
+                    "/media/other.mkv": {
+                        "rating_key": "other",
+                        "versions": [{"file": "/media/other.mkv", "height": 1080, "dynamic_range": "SDR"}],
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -248,8 +248,10 @@ def test_shim_uses_live_lookup_for_protected_index_miss(monkeypatch, tmp_path):
     full_item = {"Media": [current_media, shim_media(fallback_file, 1080, "SDR")]}
 
     def fake_get_json(path, params):
-        if path.startswith("/hubs/search") or path.startswith("/search"):
-            return {"MediaContainer": {"Hub": [{"Metadata": [{"ratingKey": "rk-1", "Media": [current_media]}]}]}}
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": [{"key": "1", "type": "movie", "Location": [{"path": "/media"}]}]}}
+        if path == "/library/sections/1/all":
+            return {"MediaContainer": {"Metadata": [{"ratingKey": "rk-1", "Media": [current_media]}]}}
         if path == "/library/metadata/rk-1":
             return {"MediaContainer": {"Metadata": [full_item]}}
         return None
@@ -281,9 +283,14 @@ def test_shim_uses_live_lookup_for_stale_protected_index(monkeypatch, tmp_path):
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": int(shim.time.time()) - 3600,
-                "items": [{"ratingKey": "rk-1", "Media": [shim_media(input_file, 2160, "HDR")]}],
+                "paths": {
+                    input_file: {
+                        "rating_key": "rk-1",
+                        "versions": [{"file": input_file, "height": 2160, "dynamic_range": "HDR"}],
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -522,21 +529,7 @@ def test_shim_intercepts_plex_hls_ssegment_output(monkeypatch, tmp_path):
     input_file = "/media/movie-2160-hdr.mkv"
     fallback_file = "/media/movie-1080-sdr.mkv"
     index_path = tmp_path / "plex-version-index.json"
-    index_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "generated_at_epoch": int(shim.time.time()),
-                "items": [
-                    {
-                        "ratingKey": "rk-1",
-                        "Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    index_path.write_text(json.dumps(compact_v2_index(input_file, fallback_file, rating_key="rk-1")), encoding="utf-8")
     monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
     monkeypatch.setattr(shim, "ENABLE_CACHE", False)
     monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False)
@@ -856,27 +849,11 @@ def test_shim_section_scan_uses_episode_type_for_show_libraries(monkeypatch):
     assert ("/library/sections/2/all", {"type": "4"}) in calls
 
 
-def test_shim_uses_precomputed_version_index_before_plex_search(monkeypatch, tmp_path):
+def test_shim_uses_precomputed_version_index_before_section_lookup(monkeypatch, tmp_path):
     target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
+    fallback = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"
     index_path = tmp_path / "plex-version-index.json"
-    index_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "generated_at_epoch": int(time.time()),
-                "items": [
-                    {
-                        "ratingKey": "9001",
-                        "Media": [
-                            {"height": 2160, "Part": [{"file": target}]},
-                            {"height": 1080, "Part": [{"file": "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"}]},
-                        ],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    index_path.write_text(json.dumps(compact_v2_index(target, fallback)), encoding="utf-8")
     index_path.chmod(0o660)
     config_path = tmp_path / "shim-config.json"
     config_path.write_text(
@@ -894,7 +871,7 @@ def test_shim_uses_precomputed_version_index_before_plex_search(monkeypatch, tmp
     assert found[0] == "9001"
 
 
-def test_shim_uses_compact_v2_version_index_before_plex_search(monkeypatch, tmp_path):
+def test_shim_uses_compact_v2_version_index_before_section_lookup(monkeypatch, tmp_path):
     shim = load_shim()
     target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
     fallback = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"
@@ -918,22 +895,16 @@ def test_shim_uses_compact_v2_version_index_before_plex_search(monkeypatch, tmp_
     assert best.height == 1080
 
 
-def test_shim_falls_back_to_v1_index_when_v2_paths_miss(monkeypatch, tmp_path):
+def test_shim_rejects_v1_version_index(monkeypatch, tmp_path):
     shim = load_shim()
     target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
     fallback = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"
-    index_path = tmp_path / "plex-version-index-mixed.json"
+    index_path = tmp_path / "plex-version-index-v1.json"
     index_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 1,
                 "generated_at_epoch": int(time.time()),
-                "paths": {
-                    "/mnt/media/Movies/Other/Other - 2160p HDR.mkv": {
-                        "rating_key": "other",
-                        "versions": [],
-                    }
-                },
                 "items": [
                     {
                         "ratingKey": "9001",
@@ -952,9 +923,72 @@ def test_shim_falls_back_to_v1_index_when_v2_paths_miss(monkeypatch, tmp_path):
 
     found = shim.plex_find_item_by_file_via_version_index(target)
 
-    assert found is not None
-    assert found[0] == "9001"
-    assert shim.VERSION_INDEX_LAST_STATUS == "hit_v1_fallback"
+    assert found is None
+    assert shim.VERSION_INDEX_LAST_STATUS == "unsupported_v1"
+
+
+def test_shim_uses_plex_metadata_api_even_after_v2_locator_hit(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    index_path = tmp_path / "plex-version-index-v2.json"
+    input_file = "/media/movie-2160-hdr.mkv"
+    stale_index_fallback = "/media/index-only-1080-sdr.mkv"
+    authoritative_fallback = "/media/api-1080-sdr.mkv"
+    index_path.write_text(json.dumps(compact_v2_index(input_file, stale_index_fallback)), encoding="utf-8")
+    captured = {}
+    calls = []
+
+    def fake_get_json(path, params):
+        calls.append((path, dict(params or {})))
+        if path == "/library/metadata/9001":
+            return {
+                "MediaContainer": {
+                    "Metadata": [
+                        {
+                            "ratingKey": "9001",
+                            "Media": [
+                                shim_media(input_file, 2160, "HDR"),
+                                shim_media(authoritative_fallback, 1080, "SDR"),
+                            ],
+                        }
+                    ]
+                }
+            }
+        raise AssertionError(f"unexpected Plex API path: {path}")
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "plex_get_json", fake_get_json)
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+
+    shim.main()
+
+    assert calls == [("/library/metadata/9001", {})]
+    assert captured["args"][captured["args"].index("-i") + 1] == authoritative_fallback
+
+
+def test_shim_does_not_use_basename_search_to_authorize_lookup(monkeypatch, tmp_path):
+    shim = load_shim()
+    input_file = "/media/movie-2160-hdr.mkv"
+    index_path = tmp_path / "missing-index.json"
+
+    def fake_get_json(path, params):
+        if path.startswith("/hubs/search") or path.startswith("/search"):
+            raise AssertionError("basename search must not authorize protected swaps")
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": []}}
+        return None
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "ALLOW_LIVE_LOOKUP_ON_INDEX_MISS", True, raising=False)
+    monkeypatch.setattr(shim, "plex_get_json", fake_get_json)
+
+    assert shim.plex_find_item_by_file(input_file) is None
 
 
 def test_shim_version_index_reports_empty_and_stale(monkeypatch, tmp_path):
@@ -963,21 +997,21 @@ def test_shim_version_index_reports_empty_and_stale(monkeypatch, tmp_path):
     index_path = tmp_path / "plex-version-index.json"
     monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path))
 
-    index_path.write_text(json.dumps({"version": 1, "items": []}), encoding="utf-8")
+    index_path.write_text(json.dumps({"version": 2, "paths": {}}), encoding="utf-8")
     assert shim.plex_find_item_by_file_via_version_index(target) is None
     assert shim.VERSION_INDEX_LAST_STATUS == "empty"
 
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": 1000,
-                "items": [
-                    {
-                        "ratingKey": "9001",
-                        "Media": [{"height": 2160, "Part": [{"file": target}]}],
+                "paths": {
+                    target: {
+                        "rating_key": "9001",
+                        "versions": [{"file": target, "height": 2160, "dynamic_range": "HDR"}],
                     }
-                ],
+                },
             }
         ),
         encoding="utf-8",
@@ -1147,9 +1181,14 @@ def test_shim_downshift_first_uses_bounded_live_lookup_after_index_miss(monkeypa
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": int(shim.time.time()),
-                "items": [{"ratingKey": "other", "Media": [shim_media("/media/other.mkv", 1080, "SDR")]}],
+                "paths": {
+                    "/media/other.mkv": {
+                        "rating_key": "other",
+                        "versions": [{"file": "/media/other.mkv", "height": 1080, "dynamic_range": "SDR"}],
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -1162,8 +1201,10 @@ def test_shim_downshift_first_uses_bounded_live_lookup_after_index_miss(monkeypa
     full_item = {"Media": [current_media, shim_media(fallback_file, 720, "SDR")]}
 
     def fake_get_json(path, params):
-        if path.startswith("/hubs/search") or path.startswith("/search"):
-            return {"MediaContainer": {"Hub": [{"Metadata": [{"ratingKey": "rk-1", "Media": [current_media]}]}]}}
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": [{"key": "1", "type": "movie", "Location": [{"path": "/media"}]}]}}
+        if path == "/library/sections/1/all":
+            return {"MediaContainer": {"Metadata": [{"ratingKey": "rk-1", "Media": [current_media]}]}}
         if path == "/library/metadata/rk-1":
             return {"MediaContainer": {"Metadata": [full_item]}}
         return None
@@ -1196,9 +1237,14 @@ def test_shim_live_lookup_index_miss_passes_through_when_budget_expires(monkeypa
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": int(shim.time.time()),
-                "items": [{"ratingKey": "other", "Media": [shim_media("/media/other.mkv", 1080, "SDR")]}],
+                "paths": {
+                    "/media/other.mkv": {
+                        "rating_key": "other",
+                        "versions": [{"file": "/media/other.mkv", "height": 1080, "dynamic_range": "SDR"}],
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -1238,9 +1284,14 @@ def test_shim_blocks_4k_when_index_miss_budget_expires(monkeypatch, tmp_path):
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": int(shim.time.time()),
-                "items": [{"ratingKey": "other", "Media": [shim_media("/media/other.mkv", 1080, "SDR")]}],
+                "paths": {
+                    "/media/other.mkv": {
+                        "rating_key": "other",
+                        "versions": [{"file": "/media/other.mkv", "height": 1080, "dynamic_range": "SDR"}],
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -1305,14 +1356,17 @@ def test_shim_blocks_4k_when_version_index_is_stale(monkeypatch, tmp_path):
     index_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "generated_at_epoch": int(shim.time.time()) - 3600,
-                "items": [
-                    {
-                        "ratingKey": "rk-1",
-                        "Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")],
+                "paths": {
+                    input_file: {
+                        "rating_key": "rk-1",
+                        "versions": [
+                            {"file": input_file, "height": 2160, "dynamic_range": "HDR"},
+                            {"file": fallback_file, "height": 1080, "dynamic_range": "SDR"},
+                        ],
                     }
-                ],
+                },
             }
         ),
         encoding="utf-8",
@@ -1386,21 +1440,7 @@ def test_shim_shadow_mode_swaps_4k_when_fresh_index_proves_fallback(monkeypatch,
     index_path = tmp_path / "plex-version-index.json"
     input_file = "/media/movie-2160-hdr.mkv"
     fallback_file = "/media/movie-1080-sdr.mkv"
-    index_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "generated_at_epoch": int(shim.time.time()),
-                "items": [
-                    {
-                        "ratingKey": "rk-1",
-                        "Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    index_path.write_text(json.dumps(compact_v2_index(input_file, fallback_file, rating_key="rk-1")), encoding="utf-8")
     captured = {}
 
     monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
@@ -1409,6 +1449,11 @@ def test_shim_shadow_mode_swaps_4k_when_fresh_index_proves_fallback(monkeypatch,
     monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
     monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False, raising=False)
     monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(
+        shim,
+        "plex_fetch_full_metadata",
+        lambda rating_key: {"Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")]},
+    )
     monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
     monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
 
@@ -1443,7 +1488,7 @@ def test_shim_passes_through_if_budget_expires_during_lookup_even_when_strict(mo
     assert captured["args"][1] == input_file
 
 
-def test_shim_version_index_hit_with_sibling_metadata_skips_live_metadata_fetch(monkeypatch, tmp_path):
+def test_shim_version_index_hit_with_sibling_metadata_still_fetches_live_metadata(monkeypatch, tmp_path):
     shim = load_shim()
     real = tmp_path / "Plex Transcoder.downshiftarr-real"
     real.write_text("# real\n", encoding="utf-8")
@@ -1451,38 +1496,27 @@ def test_shim_version_index_hit_with_sibling_metadata_skips_live_metadata_fetch(
     index_path = tmp_path / "plex-version-index.json"
     input_file = "/media/movie-2160-hdr.mkv"
     fallback_file = "/media/movie-1080-sdr.mkv"
-    index_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "generated_at_epoch": int(shim.time.time()),
-                "items": [
-                    {
-                        "ratingKey": "rk-1",
-                        "Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    index_path.write_text(json.dumps(compact_v2_index(input_file, fallback_file, rating_key="rk-1")), encoding="utf-8")
     captured = {}
+    calls = []
 
     monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
     monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
     monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False, raising=False)
     monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
-    monkeypatch.setattr(
-        shim,
-        "plex_fetch_full_metadata",
-        lambda rating_key: (_ for _ in ()).throw(AssertionError("version-index metadata should be sufficient")),
-    )
+
+    def fake_fetch_full_metadata(rating_key):
+        calls.append(rating_key)
+        return {"Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")]}
+
+    monkeypatch.setattr(shim, "plex_fetch_full_metadata", fake_fetch_full_metadata)
     monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
     monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
 
     shim.main()
 
     assert captured["args"][1] == fallback_file
+    assert calls == ["rk-1"]
 
 
 def test_shim_can_disable_live_lookup_after_index_miss(monkeypatch, tmp_path):

@@ -1082,10 +1082,10 @@ def fetch_library_item(plex, rating_key: str):
     Fetch full library metadata for a rating_key (for version list).
     """
     try:
-        return plex.fetchItem(int(rating_key))
+        return plex.fetchItem(f"/library/metadata/{rating_key}")
     except Exception:
         pass
-    return plex.fetchItem(f"/library/metadata/{rating_key}")
+    return plex.fetchItem(int(rating_key))
 
 
 def current_media_identity(item) -> Tuple[Optional[str], Optional[int], str, str]:
@@ -1653,21 +1653,19 @@ def main(argv: List[str]) -> int:
         log_event("DEBUG", "Current source not high-quality (h=%s, dr=%s). No action." % (cur_h, cur_dr), ev=ev, ctx=ctx)
         return 0
 
-    # Choose a fallback
+    # Choose a fallback. The active session is useful for matching/continuity,
+    # but fallback choices must use current Plex library metadata.
     item_for_versions = ctx.session_item
-    preferred_height = adaptive_preferred_height(client_family, cur_h, cur_dr)
-    target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
-
-    # If session metadata didn't expose all versions, retry using full library metadata once.
-    if target_idx is None and ev.rating_key:
+    if ev.rating_key:
         try:
             item_for_versions = fetch_library_item(plex, ev.rating_key)
-            target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
         except Exception as e:
-            log_event("WARNING", "Unable to fetch library item for fallback selection: %s" % e, ev=ev, ctx=ctx)
+            log_event("WARNING", "Unable to fetch authoritative library metadata for fallback selection: %s" % e, ev=ev, ctx=ctx)
             if four_k_transcode_blocked:
                 terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
             return 0
+    preferred_height = adaptive_preferred_height(client_family, cur_h, cur_dr)
+    target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
 
     if target_idx is None:
         log_event("WARNING", "No suitable fallback media found (per policy/config).", ev=ev, ctx=ctx)

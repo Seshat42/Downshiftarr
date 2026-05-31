@@ -99,6 +99,12 @@ PLEX_TOKEN_ENV_VARS: Tuple[str, ...] = (
 # Network timeout for Plex API calls (seconds). Keep this small to avoid delaying playback.
 PLEX_HTTP_TIMEOUT_S: float = 0.75
 
+# Protected-source metadata retries. This is intentionally tiny: protected
+# playback gets one immediate second chance inside the same decision budget,
+# then fails closed instead of allowing a protected transcode.
+PROTECTED_LOOKUP_RETRY_ATTEMPTS: int = 1
+PROTECTED_LOOKUP_RETRY_DELAY_MS: int = 0
+
 # Some Plex libraries do not return file-name searches for versioned media even
 # though `/library/sections/<key>/all` contains the exact Part file. Keep this
 # fallback bounded and section-location scoped so the shim can still find
@@ -288,6 +294,8 @@ _CONFIG_SCHEMA: Dict[str, type] = {
     "PLEX_URL": str,
     "PLEX_TOKEN_FILE": str,
     "PLEX_HTTP_TIMEOUT_S": float,
+    "PROTECTED_LOOKUP_RETRY_ATTEMPTS": int,
+    "PROTECTED_LOOKUP_RETRY_DELAY_MS": int,
     "ENABLE_SECTION_SCAN_FALLBACK": bool,
     "SECTION_SCAN_MAX_ITEMS": int,
     "VERSION_INDEX_FILE": str,
@@ -327,6 +335,8 @@ _CONFIG_SCHEMA: Dict[str, type] = {
 
 _CONFIG_INT_RANGES: Dict[str, Tuple[int, int]] = {
     "SECTION_SCAN_MAX_ITEMS": (1, 100_000),
+    "PROTECTED_LOOKUP_RETRY_ATTEMPTS": (0, 3),
+    "PROTECTED_LOOKUP_RETRY_DELAY_MS": (0, 250),
     "VERSION_INDEX_MAX_AGE_S": (1, 86_400),
     "PROTECTED_SOURCE_MIN_HEIGHT": (2, 8192),
     "MAX_ALLOWED_HEIGHT": (2, 8192),
@@ -1343,11 +1353,7 @@ def plex_find_item_by_file_via_version_index(file_path: str) -> Optional[Tuple[s
     if not isinstance(data, dict):
         VERSION_INDEX_LAST_STATUS = "invalid"
         return None
-    version = safe_int(data.get("version"))
-    if version == 1:
-        VERSION_INDEX_LAST_STATUS = "unsupported_v1"
-        return None
-    if version != 2:
+    if safe_int(data.get("version")) != 2:
         VERSION_INDEX_LAST_STATUS = "invalid"
         return None
     paths = data.get("paths") or data.get("path_index")
@@ -1397,6 +1403,40 @@ def plex_fetch_full_metadata(rating_key: str) -> Optional[dict]:
     if not md:
         return None
     return md[0]
+
+
+def plex_fetch_full_metadata_for_swap(
+    rating_key: str,
+    decision_start_ms: float,
+    *,
+    retry_for_protected: bool,
+) -> Optional[dict]:
+    attempts = 1 + (PROTECTED_LOOKUP_RETRY_ATTEMPTS if retry_for_protected else 0)
+    for attempt in range(1, attempts + 1):
+        if budget_exhausted(decision_start_ms):
+            return None
+        item = plex_fetch_full_metadata(rating_key)
+        if item:
+            if attempt > 1:
+                record_telemetry(
+                    "protected_metadata_retry_success",
+                    elapsed_ms=monotonic_ms() - decision_start_ms,
+                    index_status=VERSION_INDEX_LAST_STATUS,
+                )
+            return item
+        if not retry_for_protected or attempt >= attempts:
+            break
+        record_telemetry(
+            "protected_metadata_retry",
+            elapsed_ms=monotonic_ms() - decision_start_ms,
+            index_status=VERSION_INDEX_LAST_STATUS,
+        )
+        if PROTECTED_LOOKUP_RETRY_DELAY_MS > 0:
+            remaining = remaining_decision_budget_s()
+            if remaining is None or remaining <= 0:
+                return None
+            time.sleep(min(PROTECTED_LOOKUP_RETRY_DELAY_MS / 1000.0, remaining))
+    return None
 
 
 @dataclass
@@ -1641,7 +1681,11 @@ def attempt_protected_waterfall_fast_path(
         return None
     if budget_exhausted(decision_start_ms):
         block_4k_transcode("decision budget exhausted before metadata", decision_start_ms)
-    full_metadata = plex_fetch_full_metadata(rating_key)
+    full_metadata = plex_fetch_full_metadata_for_swap(
+        rating_key,
+        decision_start_ms,
+        retry_for_protected=True,
+    )
     if budget_exhausted(decision_start_ms):
         block_4k_transcode("decision budget exhausted during metadata", decision_start_ms)
     if not full_metadata:
@@ -1947,7 +1991,16 @@ def main() -> None:
     # Fetch authoritative metadata (streams / dynamic range / sibling versions).
     # The v2 index is only a fast exact-path locator; every swap decision must use
     # Plex's current `/library/metadata/<ratingKey>` response.
-    full_item = plex_fetch_full_metadata(rating_key)
+    current_quick_for_retry = find_current_media(search_item, input_file)
+    retry_metadata = bool(
+        (input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED)
+        or (current_quick_for_retry and is_protected_source(current_quick_for_retry))
+    )
+    full_item = plex_fetch_full_metadata_for_swap(
+        rating_key,
+        decision_start_ms,
+        retry_for_protected=retry_metadata,
+    )
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted during full metadata fetch; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
@@ -2046,7 +2099,7 @@ def main() -> None:
     args[input_idx] = fallback.file_path
     swapped_to_sdr = fallback.dyn_range_class == "SDR"
 
-    outcome = "live_lookup_waterfall_swap" if VERSION_INDEX_LAST_STATUS != "hit" else "waterfall_swap"
+    outcome = "waterfall_swap" if VERSION_INDEX_LAST_STATUS.startswith("hit") else "live_lookup_waterfall_swap"
     log(
         "INFO",
         f"{outcome}: {current.height}p/{current.dyn_range_class} -> {fallback.height}p/{fallback.dyn_range_class} "

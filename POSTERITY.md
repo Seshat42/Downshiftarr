@@ -195,13 +195,20 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 
 ## 2026-05-30 Compact Index And Config Guard Follow-Up
 
-- Q: Should the shim add a compact Plex Versions index format? A: Yes. The operator selected compact v2 with v1 fallback for one rollout so the hot path can avoid scanning broad item-shaped records while deployed Bragi evidence remains readable during transition.
+- Q: Should the shim add a compact Plex Versions index format? A: Yes. The operator selected compact v2 so the hot path can avoid scanning broad item-shaped records. Earlier transition compatibility is historical only; active policy rejects non-v2 indexes.
 - Q: How should unsafe config ranges behave? A: Fail closed for protected playback. The shim now rejects unsafe numeric ranges at config load rather than silently accepting drift; protected decisions still use source/version proof and the non-protected path keeps the existing pass-through-on-uncertainty UX policy.
 - Q: Should 1080 remux-like sources become hard-protected? A: No. The default remains waterfall-only; hard protection stays behind explicit config.
-- Implementation note: the shim can now load compact v2 indexes keyed by part path, converts them into the existing same-item/same-edition decision model, records `hit_v2` telemetry, falls back to v1 `items` when needed, and exposes `attempt_protected_waterfall_fast_path` before generic lookup/cache logic.
+- Historical implementation note: the shim can load compact v2 indexes keyed by part path, converts them into the existing same-item/same-edition decision model, records `hit_v2` telemetry, and exposes `attempt_protected_waterfall_fast_path` before generic lookup/cache logic. Temporary v1 compatibility from this rollout is superseded; active policy treats every non-v2 index as invalid.
 
 ## 2026-05-30 Plex API Authoritative Waterfall Decision
 
 - Q: Should the shim rely on a fresh index as the authoritative Versions source? A: No. The operator selected Plex API always. The compact v2 index is only an exact path-to-`ratingKey` locator; every waterfall swap must use `/library/metadata/{ratingKey}` as the current authoritative Plex Versions list.
 - Q: Should v1 index compatibility remain? A: No. Older v1 item-shaped indexes are now rejected and must be regenerated as compact v2 locators before Bragi proof can pass.
 - Implementation note: basename Plex search was removed from the swap authorization path. If the v2 locator misses, the shim may use a bounded section-location exact `Part.file` lookup to find the item, then must fetch `/library/metadata/{ratingKey}` before selecting `1080 SDR -> 720 -> 480 -> 360`.
+
+## 2026-05-31 Authoritative Lookup Follow-Up
+
+- Q: Should protected metadata lookup get a retry? A: Yes, one immediate retry inside the same 100 ms decision budget, then block protected playback if proof is still unavailable.
+- Q: How should v1 indexes behave now? A: Delete v1 support. Any non-v2 index is invalid and may only lead to live lookup or protected blocking.
+- Q: Which rating key should the Tautulli script trust? A: Prefer the matched Plex session `ratingKey`; if the Tautulli event key disagrees, log a sanitized mismatch and use the session authority.
+- Implementation note: swaps now require explicit `/library/metadata/{ratingKey}` metadata; numeric `fetchItem` fallback is not allowed to authorize version selection.

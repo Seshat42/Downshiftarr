@@ -1,50 +1,50 @@
 {
   "errors": [],
-  "generated_at": "2026-05-28T04:47:20Z",
+  "generated_at": "2026-05-31T08:31:18Z",
   "metrics": {
     "./Downshiftarr.py": {
-      "CONFIDENCE.HIGH": 12,
+      "CONFIDENCE.HIGH": 16,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 12,
+      "SEVERITY.LOW": 16,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 898,
+      "loc": 1416,
       "nosec": 0,
       "skipped_tests": 0
     },
     "./Plex Transcoder": {
-      "CONFIDENCE.HIGH": 3,
+      "CONFIDENCE.HIGH": 6,
       "CONFIDENCE.LOW": 0,
-      "CONFIDENCE.MEDIUM": 2,
+      "CONFIDENCE.MEDIUM": 1,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 4,
+      "SEVERITY.LOW": 6,
       "SEVERITY.MEDIUM": 1,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 144,
+      "loc": 1590,
       "nosec": 0,
       "skipped_tests": 0
     },
     "_totals": {
-      "CONFIDENCE.HIGH": 15,
+      "CONFIDENCE.HIGH": 22,
       "CONFIDENCE.LOW": 0,
-      "CONFIDENCE.MEDIUM": 2,
+      "CONFIDENCE.MEDIUM": 1,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 16,
+      "SEVERITY.LOW": 22,
       "SEVERITY.MEDIUM": 1,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 1042,
+      "loc": 3006,
       "nosec": 0,
       "skipped_tests": 0
     }
   },
   "results": [
     {
-      "code": "140                 load_dotenv(str(local_env))\n141     except Exception:\n142         # Env loading is a convenience; never crash because of it.\n143         pass\n144 \n",
+      "code": "143                 load_dotenv(str(local_env))\n144     except Exception:\n145         # Env loading is a convenience; never crash because of it.\n146         pass\n147 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -55,18 +55,18 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 141,
+      "line_number": 144,
       "line_range": [
-        141,
-        142,
-        143
+        144,
+        145,
+        146
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "291             os.makedirs(log_dir, exist_ok=True)\n292     except Exception:\n293         pass\n294 \n",
+      "code": "326             os.makedirs(log_dir, exist_ok=True)\n327     except Exception:\n328         pass\n329 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -77,17 +77,38 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 292,
+      "line_number": 327,
       "line_range": [
-        292,
-        293
+        327,
+        328
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "490             return n\n491     except Exception:\n492         pass\n493     return None\n",
+      "code": "617                 best = candidate\n618         except Exception:\n619             continue\n620     return best[2] if best is not None else None\n",
+      "col_offset": 8,
+      "end_col_offset": 20,
+      "filename": "./Downshiftarr.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Continue detected.",
+      "line_number": 618,
+      "line_range": [
+        618,
+        619
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html",
+      "test_id": "B112",
+      "test_name": "try_except_continue"
+    },
+    {
+      "code": "836             return n\n837     except Exception:\n838         pass\n839     return None\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -98,17 +119,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 491,
+      "line_number": 837,
       "line_range": [
-        491,
-        492
+        837,
+        838
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "520                         return h\n521     except Exception:\n522         pass\n523 \n",
+      "code": "866                         return h\n867     except Exception:\n868         pass\n869 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -119,17 +140,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 521,
+      "line_number": 867,
       "line_range": [
-        521,
-        522
+        867,
+        868
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "552                         return \"HDR\"\n553     except Exception:\n554         pass\n555 \n",
+      "code": "898                         return \"HDR\"\n899     except Exception:\n900         pass\n901 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -140,17 +161,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 553,
+      "line_number": 899,
       "line_range": [
-        553,
-        554
+        899,
+        900
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "592         return plex.fetchItem(int(rating_key))\n593     except Exception:\n594         pass\n595     return plex.fetchItem(f\"/library/metadata/{rating_key}\")\n",
+      "code": "910                 return path\n911     except Exception:\n912         pass\n913     return \"\"\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -161,17 +182,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 593,
+      "line_number": 911,
       "line_range": [
-        593,
-        594
+        911,
+        912
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "610             return (str(getattr(m0, \"id\", None)), media_height(m0), media_dynamic_range(m0))\n611     except Exception:\n612         pass\n613     return (None, None, \"UNKNOWN\")\n",
+      "code": "925                 return value\n926     except Exception:\n927         pass\n928     return None\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "./Downshiftarr.py",
@@ -182,17 +203,80 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 611,
+      "line_number": 926,
       "line_range": [
-        611,
-        612
+        926,
+        927
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "853                 return c, str(getattr(c, \"machineIdentifier\", \"\") or ctx.machine_id or \"\")\n854         except Exception:\n855             pass\n856 \n",
+      "code": "1009                 return key\n1010     except Exception:\n1011         pass\n1012     return \"\"\n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "./Downshiftarr.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 1010,
+      "line_range": [
+        1010,
+        1011
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "1107             return (str(getattr(m0, \"id\", None)), media_height(m0), media_dynamic_range(m0), media_file_path(m0))\n1108     except Exception:\n1109         pass\n1110     return (None, None, \"UNKNOWN\", \"\")\n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "./Downshiftarr.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 1108,
+      "line_range": [
+        1108,
+        1109
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "1120             return media_bitrate_kbps(media_list[0])\n1121     except Exception:\n1122         pass\n1123     return None\n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "./Downshiftarr.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 1121,
+      "line_range": [
+        1121,
+        1122
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "1378                 return c, resolved or (ctx.machine_id or \"\")\n1379         except Exception:\n1380             pass\n1381 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "./Downshiftarr.py",
@@ -203,17 +287,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 854,
+      "line_number": 1379,
       "line_range": [
-        854,
-        855
+        1379,
+        1380
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "868                 return pc, tid\n869             except Exception:\n870                 continue\n871     except Exception as e:\n",
+      "code": "1393                 return pc, tid\n1394             except Exception:\n1395                 continue\n1396     except Exception as e:\n",
       "col_offset": 12,
       "end_col_offset": 24,
       "filename": "./Downshiftarr.py",
@@ -224,17 +308,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Continue detected.",
-      "line_number": 869,
+      "line_number": 1394,
       "line_range": [
-        869,
-        870
+        1394,
+        1395
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html",
       "test_id": "B112",
       "test_name": "try_except_continue"
     },
     {
-      "code": "883                     return pc, tid\n884                 except Exception:\n885                     continue\n886         except Exception:\n",
+      "code": "1408                     return pc, tid\n1409                 except Exception:\n1410                     continue\n1411         except Exception:\n",
       "col_offset": 16,
       "end_col_offset": 28,
       "filename": "./Downshiftarr.py",
@@ -245,17 +329,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Continue detected.",
-      "line_number": 884,
+      "line_number": 1409,
       "line_range": [
-        884,
-        885
+        1409,
+        1410
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html",
       "test_id": "B112",
       "test_name": "try_except_continue"
     },
     {
-      "code": "885                     continue\n886         except Exception:\n887             pass\n888 \n",
+      "code": "1410                     continue\n1411         except Exception:\n1412             pass\n1413 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "./Downshiftarr.py",
@@ -266,17 +350,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 886,
+      "line_number": 1411,
       "line_range": [
-        886,
-        887
+        1411,
+        1412
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "1211                 terminate_best_effort(None, ev, None, KILL_MESSAGE_UNEXPECTED_ERROR)\n1212             except Exception:\n1213                 pass\n1214 \n",
+      "code": "1794                 terminate_best_effort(None, ev, None, KILL_MESSAGE_UNEXPECTED_ERROR)\n1795             except Exception:\n1796                 pass\n1797 \n",
       "col_offset": 12,
       "end_col_offset": 20,
       "filename": "./Downshiftarr.py",
@@ -287,57 +371,122 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 1212,
+      "line_number": 1795,
       "line_range": [
-        1212,
-        1213
+        1795,
+        1796
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "6 import urllib.parse\n7 import subprocess\n8 import time\n",
-      "col_offset": 0,
-      "end_col_offset": 17,
+      "code": "538             f.write(f\"[{ts}] [{level.upper():7}] [PID:{pid}] {message}\\n\")\n539     except Exception:\n540         # Swallow logging errors; they are never worth breaking playback.\n541         pass\n542 \n",
+      "col_offset": 4,
+      "end_col_offset": 12,
       "filename": "./Plex Transcoder",
       "issue_confidence": "HIGH",
       "issue_cwe": {
-        "id": 78,
-        "link": "https://cwe.mitre.org/data/definitions/78.html"
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
       },
       "issue_severity": "LOW",
-      "issue_text": "Consider possible security implications associated with the subprocess module.",
-      "line_number": 7,
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 539,
       "line_range": [
-        7
+        539,
+        540,
+        541
       ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
-      "test_id": "B404",
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "626         os.replace(tmp, TELEMETRY_FILE)\n627     except Exception:\n628         pass\n629 \n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "./Plex Transcoder",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 627,
+      "line_range": [
+        627,
+        628
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "697     try:\n698         with urllib.request.urlopen(req, timeout=timeout_s) as resp:\n699             raw = resp.read()\n",
+      "col_offset": 13,
+      "end_col_offset": 59,
+      "filename": "./Plex Transcoder",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 22,
+        "link": "https://cwe.mitre.org/data/definitions/22.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
+      "line_number": 698,
+      "line_range": [
+        698
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
+      "test_id": "B310",
       "test_name": "blacklist"
     },
     {
-      "code": "15 PLEX_URL = \"http://127.0.0.1:32400\"\n16 PLEX_TOKEN = \"YOUR_PLEX_TOKEN_HERE\"\n17 \n",
-      "col_offset": 13,
-      "end_col_offset": 35,
+      "code": "787                 return value\n788     except Exception:\n789         pass\n790     return None\n",
+      "col_offset": 4,
+      "end_col_offset": 12,
       "filename": "./Plex Transcoder",
-      "issue_confidence": "MEDIUM",
+      "issue_confidence": "HIGH",
       "issue_cwe": {
-        "id": 259,
-        "link": "https://cwe.mitre.org/data/definitions/259.html"
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
       },
       "issue_severity": "LOW",
-      "issue_text": "Possible hardcoded password: 'YOUR_PLEX_TOKEN_HERE'",
-      "line_number": 16,
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 788,
       "line_range": [
-        16
+        788,
+        789
       ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
-      "test_id": "B105",
-      "test_name": "hardcoded_password_string"
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
     },
     {
-      "code": "46                 f.write(f\"[{timestamp}] [PID:{pid}] {message}\\n\")\n47         except:\n48             pass\n49 \n",
+      "code": "889                         return \"HDR\"\n890     except Exception:\n891         pass\n892 \n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "./Plex Transcoder",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 890,
+      "line_range": [
+        890,
+        891
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "1159                 os.unlink(tmp)\n1160         except Exception:\n1161             pass\n1162 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "./Plex Transcoder",
@@ -348,39 +497,19 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 47,
+      "line_number": 1160,
       "line_range": [
-        47,
-        48
+        1160,
+        1161
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "56         req = urllib.request.Request(url, headers={'Accept': 'application/json'})\n57         with urllib.request.urlopen(req, timeout=1.5) as response:\n58             data = json.loads(response.read().decode())\n",
-      "col_offset": 13,
-      "end_col_offset": 53,
-      "filename": "./Plex Transcoder",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 22,
-        "link": "https://cwe.mitre.org/data/definitions/22.html"
-      },
-      "issue_severity": "MEDIUM",
-      "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
-      "line_number": 57,
-      "line_range": [
-        57
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
-      "test_id": "B310",
-      "test_name": "blacklist"
-    },
-    {
-      "code": "155     try:\n156         os.execv(REAL_TRANSCODER_PATH, [REAL_TRANSCODER_PATH] + args)\n157     except OSError as e:\n",
+      "code": "1834     try:\n1835         os.execv(real_path, [real_path] + list(args))\n1836     except OSError as e:\n",
       "col_offset": 8,
-      "end_col_offset": 69,
+      "end_col_offset": 53,
       "filename": "./Plex Transcoder",
       "issue_confidence": "MEDIUM",
       "issue_cwe": {
@@ -389,9 +518,9 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Starting a process without a shell.",
-      "line_number": 156,
+      "line_number": 1835,
       "line_range": [
-        156
+        1835
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b606_start_process_with_no_shell.html",
       "test_id": "B606",

@@ -136,6 +136,8 @@ Example:
   "PLEX_URL": "http://10.67.0.2:32400",
   "PLEX_TOKEN_FILE": "/etc/downshiftarr/plex-shim-token",
   "PLEX_HTTP_TIMEOUT_S": 0.35,
+  "PROTECTED_LOOKUP_RETRY_ATTEMPTS": 1,
+  "PROTECTED_LOOKUP_RETRY_DELAY_MS": 0,
   "LOG_FILE": "/var/log/downshiftarr/plex-transcoder-shim.log",
   "CACHE_FILE": "/var/lib/downshiftarr/plex-transcoder-cache.json",
   "CACHE_TTL_S": 60,
@@ -162,9 +164,10 @@ Key settings youâ€™ll care about first:
 - `PLEX_URL` â€“ usually `http://127.0.0.1:32400` inside the Plex container/host.
 - `PLEX_TOKEN_FILE` â€“ optional absolute path to a root-owned token file readable by the Plex service user. This is preferred when Plex does not provide `X_PLEX_TOKEN` to spawned transcodes because it keeps the token out of argv, examples, and process environment. The file must be regular, non-symlinked, not group/other writable, not other-readable, and owned by root or the Plex service user.
 - `PLEX_TOKEN` is deliberately not accepted in the JSON file. Leave the shim binary token-free and provide tokens through `PLEX_TOKEN_FILE` or, when Plex supplies one, `X_PLEX_TOKEN`/`PLEX_TOKEN`/`PLEX_USER_TOKEN` process environment.
-- `VERSION_INDEX_FILE` - required for production 4K enforcement. The compact v2 index is an exact part-path locator only: it finds the Plex `ratingKey` quickly, then the shim fetches `/library/metadata/{ratingKey}` and uses that Plex API response as the authoritative Versions list before any swap. Older v1 item-shaped indexes are rejected.
+- `VERSION_INDEX_FILE` - required for production 4K enforcement. The compact v2 index is an exact part-path locator only: it finds the Plex `ratingKey` quickly, then the shim fetches `/library/metadata/{ratingKey}` and uses that Plex API response as the authoritative Versions list before any swap. Any non-v2 index is invalid and forces live lookup or protected blocking.
 - `ALLOW_LIVE_LOOKUP_ON_INDEX_MISS` - default `true`; every cache/index miss or stale index uses a bounded local Plex lookup inside the same 100 ms decision budget. Protected sources still block if proof or time runs out.
 - `VERSION_INDEX_MAX_AGE_S` - freshness limit for indexes. Production indexes must include `generated_at_epoch`; stale, future-dated, missing-timestamp, unreadable, oversized, or ambiguous indexes are rejected.
+- `PROTECTED_LOOKUP_RETRY_ATTEMPTS` - default `1`; protected metadata lookup gets one immediate retry inside the same decision budget before blocking. Keep `PROTECTED_LOOKUP_RETRY_DELAY_MS=0` for fastest first-segment behavior.
 - `FOUR_K_TRANSCODE_ALLOWED` - default `false`; a 4K source may be swapped to a verified lower Plex Version, but it may not be passed through to Plex for transcoding.
 - `REQUIRE_FRESH_INDEX_FOR_4K` - retained as a strictness marker; protected swaps require fresh index proof or a bounded same-budget Plex lookup proving the same item and edition.
 - `DECISION_BUDGET_MS` - default `100`; the shim caps local Plex API timeouts to the remaining budget. If a protected fallback cannot be proven inside the budget, the transcode is blocked.
@@ -191,7 +194,7 @@ There are additional options for:
 
 Keep these values aligned with `Downshiftarr.env` so both layers agree on what to enforce.
 
-Security note: Plex API calls in both `Downshiftarr.py` and the shim send `X-Plex-Token` as an HTTP header, not as a URL query parameter.
+Security note: Plex API calls in both `Downshiftarr.py` and the shim send `X-Plex-Token` as an HTTP header, not as a URL query parameter. Tautulli-triggered swaps use the matched Plex session's `ratingKey` and explicit `/library/metadata/{ratingKey}` library metadata before selecting a Plex Version.
 
 ---
 

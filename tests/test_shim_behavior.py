@@ -895,7 +895,7 @@ def test_shim_uses_compact_v2_version_index_before_section_lookup(monkeypatch, t
     assert best.height == 1080
 
 
-def test_shim_rejects_v1_version_index(monkeypatch, tmp_path):
+def test_shim_rejects_legacy_non_v2_version_index_without_v1_mode(monkeypatch, tmp_path):
     shim = load_shim()
     target = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 2160p HDR.mkv"
     fallback = "/mnt/media/Movies/WALL-E (2008)/WALL-E (2008) - 1080p SDR.mkv"
@@ -924,7 +924,8 @@ def test_shim_rejects_v1_version_index(monkeypatch, tmp_path):
     found = shim.plex_find_item_by_file_via_version_index(target)
 
     assert found is None
-    assert shim.VERSION_INDEX_LAST_STATUS == "unsupported_v1"
+    assert shim.VERSION_INDEX_LAST_STATUS == "invalid"
+    assert "unsupported_v1" not in (Path(__file__).resolve().parents[1] / "Plex Transcoder").read_text(encoding="utf-8")
 
 
 def test_shim_uses_plex_metadata_api_even_after_v2_locator_hit(monkeypatch, tmp_path):
@@ -970,6 +971,38 @@ def test_shim_uses_plex_metadata_api_even_after_v2_locator_hit(monkeypatch, tmp_
 
     assert calls == [("/library/metadata/9001", {})]
     assert captured["args"][captured["args"].index("-i") + 1] == authoritative_fallback
+
+
+def test_shim_retries_protected_metadata_lookup_once_after_v2_locator_hit(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    index_path = tmp_path / "plex-version-index-v2.json"
+    input_file = "/media/movie-2160-hdr.mkv"
+    fallback_file = "/media/movie-1080-sdr.mkv"
+    index_path.write_text(json.dumps(compact_v2_index(input_file, fallback_file, rating_key="9001")), encoding="utf-8")
+    captured = {}
+    calls = []
+
+    def fake_fetch_full_metadata(rating_key):
+        calls.append(rating_key)
+        if len(calls) == 1:
+            return None
+        return {"Media": [shim_media(input_file, 2160, "HDR"), shim_media(fallback_file, 1080, "SDR")]}
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "plex_fetch_full_metadata", fake_fetch_full_metadata)
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+
+    shim.main()
+
+    assert calls == ["9001", "9001"]
+    assert captured["args"][captured["args"].index("-i") + 1] == fallback_file
 
 
 def test_shim_does_not_use_basename_search_to_authorize_lookup(monkeypatch, tmp_path):
@@ -1029,6 +1062,8 @@ def test_shim_rejects_unsafe_numeric_config_ranges(monkeypatch, tmp_path):
         json.dumps(
             {
                 "PROTECTED_SOURCE_MIN_HEIGHT": 0,
+                "PROTECTED_LOOKUP_RETRY_ATTEMPTS": -1,
+                "PROTECTED_LOOKUP_RETRY_DELAY_MS": -1,
                 "DECISION_BUDGET_MS": 0,
                 "CACHE_TTL_S": -1,
                 "REMUX_1080_MIN_BITRATE_KBPS": -10,
@@ -1517,6 +1552,42 @@ def test_shim_version_index_hit_with_sibling_metadata_still_fetches_live_metadat
 
     assert captured["args"][1] == fallback_file
     assert calls == ["rk-1"]
+
+
+def test_shim_v2_locator_hit_records_index_backed_continued_waterfall(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    telemetry_path = tmp_path / "telemetry" / "shim.json"
+    index_path = tmp_path / "plex-version-index.json"
+    input_file = "/media/movie-1080-sdr.mkv"
+    fallback_file = "/media/movie-720-sdr.mkv"
+    index_path.write_text(
+        json.dumps(compact_v2_index(input_file, fallback_file, target_height=1080, fallback_height=720, rating_key="rk-1")),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "TELEMETRY_FILE", str(telemetry_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(
+        shim,
+        "plex_fetch_full_metadata",
+        lambda rating_key: {"Media": [shim_media(input_file, 1080, "SDR"), shim_media(fallback_file, 720, "SDR")]},
+    )
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+
+    shim.main()
+
+    assert captured["args"][1] == fallback_file
+    data = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert data["outcomes"]["waterfall_swap"]["count"] == 1
+    assert "live_lookup_waterfall_swap" not in data["outcomes"]
 
 
 def test_shim_can_disable_live_lookup_after_index_miss(monkeypatch, tmp_path):

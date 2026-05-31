@@ -1081,11 +1081,15 @@ def fetch_library_item(plex, rating_key: str):
     """
     Fetch full library metadata for a rating_key (for version list).
     """
-    try:
-        return plex.fetchItem(f"/library/metadata/{rating_key}")
-    except Exception:
-        pass
-    return plex.fetchItem(int(rating_key))
+    return plex.fetchItem(f"/library/metadata/{rating_key}")
+
+
+def session_rating_key(ctx: SessionContext) -> Optional[str]:
+    value = getattr(ctx.session_item, "ratingKey", None)
+    if value is None:
+        return None
+    value_s = str(value).strip()
+    return value_s or None
 
 
 def current_media_identity(item) -> Tuple[Optional[str], Optional[int], str, str]:
@@ -1655,15 +1659,24 @@ def main(argv: List[str]) -> int:
 
     # Choose a fallback. The active session is useful for matching/continuity,
     # but fallback choices must use current Plex library metadata.
-    item_for_versions = ctx.session_item
-    if ev.rating_key:
+    item_for_versions = None
+    matched_session_rating_key = session_rating_key(ctx)
+    authoritative_rating_key = matched_session_rating_key or ev.rating_key
+    if ev.rating_key and matched_session_rating_key and ev.rating_key != matched_session_rating_key:
+        log_event("WARNING", "Tautulli event rating key mismatched matched Plex session; using session authority.", ev=ev, ctx=ctx)
+    if authoritative_rating_key:
         try:
-            item_for_versions = fetch_library_item(plex, ev.rating_key)
+            item_for_versions = fetch_library_item(plex, authoritative_rating_key)
         except Exception as e:
             log_event("WARNING", "Unable to fetch authoritative library metadata for fallback selection: %s" % e, ev=ev, ctx=ctx)
             if four_k_transcode_blocked:
                 terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
             return 0
+    else:
+        log_event("WARNING", "Unable to determine authoritative rating key for fallback selection.", ev=ev, ctx=ctx)
+        if four_k_transcode_blocked:
+            terminate_best_effort(plex, ev, ctx, KILL_MESSAGE_NO_FALLBACK_MEDIA)
+        return 0
     preferred_height = adaptive_preferred_height(client_family, cur_h, cur_dr)
     target_idx = pick_best_fallback_media_index(item_for_versions, cur_mid, cur_h, cur_dr, preferred_height=preferred_height)
 

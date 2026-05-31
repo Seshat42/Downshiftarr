@@ -189,6 +189,56 @@ def test_fetch_library_item_uses_explicit_metadata_api_path_first():
     assert calls == ["/library/metadata/123"]
 
 
+def test_fetch_library_item_does_not_authorize_numeric_fallback_when_metadata_path_fails():
+    calls = []
+
+    class FakePlex:
+        def fetchItem(self, key):
+            calls.append(key)
+            if key == "/library/metadata/123":
+                raise KeyError(key)
+            raise AssertionError("numeric fetchItem fallback must not authorize version swaps")
+
+    with pytest.raises(KeyError):
+        Downshiftarr.fetch_library_item(FakePlex(), "123")
+
+    assert calls == ["/library/metadata/123"]
+
+
+def test_tautulli_waterfall_prefers_matched_session_rating_key_over_stale_event_key(monkeypatch):
+    session = protected_session(machine_identifier="client-plex-web", view_offset=4444)
+    session.ratingKey = "session-rk"
+    client = FakeClient(machine_identifier="client-plex-web")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+    terminations = []
+
+    monkeypatch.setattr(Downshiftarr, "connect_plex", lambda: plex)
+    monkeypatch.setattr(Downshiftarr, "terminate_best_effort", lambda plex, ev, ctx, message: terminations.append(message) or True)
+    monkeypatch.setattr(Downshiftarr, "SESSION_LOOKUP_RETRIES", 1)
+    monkeypatch.setattr(Downshiftarr, "SESSION_LOOKUP_DELAY_S", 0)
+    monkeypatch.setattr(Downshiftarr, "SEEK_DELAY_S", 0)
+    monkeypatch.setattr(Downshiftarr, "SEEK_RETRY_DELAY_S", 0)
+    monkeypatch.setattr(Downshiftarr, "SEEK_RETRIES", 2)
+
+    code = Downshiftarr.main(
+        [
+            "Downshiftarr.py",
+            "--rating-key=stale-tautulli-rk",
+            "--session-key=session-key",
+            "--session-id=session-id",
+            "--username=Downshiftarr Test User",
+            "--machine-id=client-plex-web",
+            "--video-decision=transcode",
+            "--video-dynamic-range=HDR",
+        ]
+    )
+
+    assert code == 0
+    assert terminations == []
+    assert plex.fetch_calls == ["/library/metadata/session-rk"]
+    assert client.play_calls == [{"item": session, "offset": 4444, "mediaIndex": 1, "partIndex": 0}]
+
+
 def test_plex_terminate_session_uses_headers_not_token_query(monkeypatch):
     captured = {}
 

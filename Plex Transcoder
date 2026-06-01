@@ -1647,6 +1647,59 @@ def pick_best_fallback(
     return None
 
 
+def fallback_candidate_is_safe(
+    current: MediaInfo,
+    fallback: MediaInfo,
+    required_max_stream: Optional[int],
+) -> bool:
+    if fallback.file_path == current.file_path:
+        return False
+    if fallback.edition_key != current.edition_key:
+        return False
+    if fallback.height is None:
+        return False
+    if fallback.height >= MAX_ALLOWED_HEIGHT or fallback.height > MAX_FALLBACK_HEIGHT:
+        return False
+    if FALLBACK_SDR_ONLY and fallback.dyn_range_class != "SDR":
+        return False
+    if not FALLBACK_SDR_ONLY and fallback.dyn_range_class != "SDR" and not ALLOW_HDR_FALLBACK:
+        return False
+    if current.height is not None:
+        improves_resolution = fallback.height < current.height
+        improves_dynamic_range = (
+            current.dyn_range_class != "SDR" and fallback.dyn_range_class == "SDR" and fallback.height <= current.height
+        )
+        if not (improves_resolution or improves_dynamic_range):
+            return False
+    if REQUIRE_STREAM_INDEX_COMPATIBILITY and required_max_stream is not None:
+        if fallback.max_stream_index is None or fallback.max_stream_index < required_max_stream:
+            return False
+    return True
+
+
+def cache_entry_authoritative_fallback(
+    full_item: dict,
+    input_file: str,
+    ce: CacheEntry,
+    required_max_stream: Optional[int],
+) -> Optional[MediaInfo]:
+    current = find_current_media(full_item, input_file)
+    if not current:
+        log("DEBUG", "Cache hit ignored because authoritative metadata no longer contains the current file")
+        return None
+    if is_protected_source(current):
+        log("DEBUG", "Cache hit ignored because authoritative metadata marks source protected")
+        return None
+    fallback = find_current_media(full_item, ce.fallback_file)
+    if not fallback:
+        log("DEBUG", "Cache hit ignored because authoritative metadata no longer contains the fallback file")
+        return None
+    if not fallback_candidate_is_safe(current, fallback, required_max_stream):
+        log("DEBUG", "Cache hit ignored because authoritative metadata rejected the fallback")
+        return None
+    return fallback
+
+
 def protected_waterfall_decision(
     args: List[str],
     input_idx: int,
@@ -1936,25 +1989,27 @@ def main() -> None:
         if ce and ce.fallback_file:
             if not os.path.exists(ce.fallback_file):
                 log("DEBUG", "Cache hit but fallback file no longer exists; ignoring")
-            elif REQUIRE_STREAM_INDEX_COMPATIBILITY and req_stream_max is not None:
-                if ce.fallback_max_stream_index is None or ce.fallback_max_stream_index < req_stream_max:
-                    log("DEBUG", "Cache hit but stream compatibility is insufficient; ignoring")
-                else:
-                    log("INFO", f"Cache hit: swapping input -> {os.path.basename(ce.fallback_file)}")
-                    args[input_idx] = ce.fallback_file
-                    swapped_to_sdr = classify_dynamic_range(ce.fallback_dr) == "SDR"
-                    final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
-                    record_telemetry("cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
-                    exec_real_transcoder(real, final_args)
-                    return
             else:
-                log("INFO", f"Cache hit: swapping input -> {os.path.basename(ce.fallback_file)}")
-                args[input_idx] = ce.fallback_file
-                swapped_to_sdr = classify_dynamic_range(ce.fallback_dr) == "SDR"
-                final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
-                record_telemetry("cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
-                exec_real_transcoder(real, final_args)
-                return
+                cache_rating_key = preverified_index_found[0] if preverified_index_found else ce.rating_key
+                full_item = plex_fetch_full_metadata_for_swap(
+                    cache_rating_key,
+                    decision_start_ms,
+                    retry_for_protected=False,
+                )
+                if full_item:
+                    fallback = cache_entry_authoritative_fallback(full_item, input_file, ce, req_stream_max)
+                    if fallback:
+                        log("INFO", f"Cache hit verified by Plex metadata: swapping input -> {os.path.basename(fallback.file_path)}")
+                        args[input_idx] = fallback.file_path
+                        swapped_to_sdr = fallback.dyn_range_class == "SDR"
+                        final_args = rewrite_args_for_performance(args, input_idx, swapped_to_sdr)
+                        record_telemetry(
+                            "cache_swap", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS
+                        )
+                        exec_real_transcoder(real, final_args)
+                        return
+                else:
+                    log("DEBUG", "Cache hit ignored because authoritative metadata could not be fetched inside the decision budget")
 
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted before Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
@@ -1984,7 +2039,7 @@ def main() -> None:
             block_4k_transcode("lookup uncertain", decision_start_ms)
         if source_actual_height_unproven(input_file, preverified_current):
             block_unknown_actual_height(input_file, decision_start_ms, "lookup uncertain")
-        if KILL_TRANSCODE_IF_UNSURE:
+        if KILL_TRANSCODE_IF_UNSURE and source_actual_height_unproven(input_file, preverified_current):
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
         exec_real_transcoder(real, args)
@@ -2033,8 +2088,7 @@ def main() -> None:
     # Plex's current `/library/metadata/<ratingKey>` response.
     current_quick_for_retry = find_current_media(search_item, input_file)
     retry_metadata = bool(
-        (input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED)
-        or (current_quick_for_retry and is_protected_source(current_quick_for_retry))
+        (input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED) or (current_quick_for_retry and is_protected_source(current_quick_for_retry))
     )
     full_item = plex_fetch_full_metadata_for_swap(
         rating_key,
@@ -2057,7 +2111,7 @@ def main() -> None:
             block_4k_transcode("metadata unavailable", decision_start_ms)
         if source_actual_height_unproven(input_file, current_quick_for_retry):
             block_unknown_actual_height(input_file, decision_start_ms, "metadata unavailable")
-        if KILL_TRANSCODE_IF_UNSURE:
+        if KILL_TRANSCODE_IF_UNSURE and source_actual_height_unproven(input_file, current_quick_for_retry):
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
         exec_real_transcoder(real, args)
@@ -2071,7 +2125,7 @@ def main() -> None:
             block_4k_transcode("current 4K media not verified", decision_start_ms)
         if source_actual_height_unproven(input_file, current_quick_for_retry):
             block_unknown_actual_height(input_file, decision_start_ms, "current media not verified")
-        if KILL_TRANSCODE_IF_UNSURE:
+        if KILL_TRANSCODE_IF_UNSURE and source_actual_height_unproven(input_file, current_quick_for_retry):
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
         exec_real_transcoder(real, args)

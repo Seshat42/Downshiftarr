@@ -146,6 +146,24 @@ def test_shim_identifies_1080_remux_by_configured_bitrate():
     assert not shim.is_1080_remux_like(ordinary)
 
 
+def test_shim_fixed_waterfall_order_prefers_576_between_720_and_480():
+    shim = load_shim()
+    current = shim.build_media_info(shim_media("/media/movie-720-sdr.mkv", 720, "SDR"))
+    full_item = {
+        "Media": [
+            shim_media("/media/movie-720-sdr.mkv", 720, "SDR"),
+            shim_media("/media/movie-480-sdr.mkv", 480, "SDR"),
+            shim_media("/media/movie-576-sdr.mkv", 576, "SDR"),
+            shim_media("/media/movie-360-sdr.mkv", 360, "SDR"),
+        ]
+    }
+
+    fallback = shim.pick_best_fallback(full_item, current, None)
+
+    assert fallback.height == 576
+    assert fallback.file_path == "/media/movie-576-sdr.mkv"
+
+
 def test_shim_does_not_use_generic_cache_before_actual_height_proof(monkeypatch, tmp_path):
     shim = load_shim()
     real = tmp_path / "Plex Transcoder.downshiftarr-real"
@@ -196,6 +214,75 @@ def test_shim_does_not_use_generic_cache_before_actual_height_proof(monkeypatch,
 
     with pytest.raises(SystemExit):
         shim.main()
+
+
+def test_shim_cache_swap_requires_authoritative_metadata(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    input_file = tmp_path / "movie-1080-sdr.mkv"
+    cached_fallback = tmp_path / "movie-720-sdr.mkv"
+    input_file.write_text("source\n", encoding="utf-8")
+    cached_fallback.write_text("fallback\n", encoding="utf-8")
+    cache_path = tmp_path / "cache.json"
+    index_path = tmp_path / "plex-version-index.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    str(input_file): {
+                        "ts": shim.time.time(),
+                        "rating_key": "rk-cache",
+                        "fallback_file": str(cached_fallback),
+                        "fallback_height": 720,
+                        "fallback_dr": "SDR",
+                        "fallback_max_stream_index": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path.write_text(
+        json.dumps(
+            compact_v2_index(
+                str(input_file),
+                str(cached_fallback),
+                target_height=1080,
+                fallback_height=720,
+                rating_key="rk-cache",
+            )
+        ),
+        encoding="utf-8",
+    )
+    metadata_calls = []
+    captured = {}
+
+    def fake_fetch_full_metadata(rating_key):
+        metadata_calls.append(rating_key)
+        return {
+            "Media": [
+                shim_media(str(input_file), 1080, "SDR"),
+                shim_media(str(cached_fallback), 720, "SDR"),
+            ]
+        }
+
+    monkeypatch.setattr(shim, "CACHE_FILE", str(cache_path), raising=False)
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", True, raising=False)
+    monkeypatch.setattr(shim, "REQUIRE_STREAM_INDEX_COMPATIBILITY", False, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "plex_fetch_full_metadata", fake_fetch_full_metadata)
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", str(input_file), "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+
+    shim.main()
+
+    assert metadata_calls == ["rk-cache"]
+    assert captured["args"][captured["args"].index("-i") + 1] == str(cached_fallback)
 
 
 def test_shim_blocks_cinematic_4kish_source_without_verified_fallback(monkeypatch, tmp_path):
@@ -1530,6 +1617,42 @@ def test_shim_passes_through_if_budget_expires_during_lookup_even_when_strict(mo
     shim.main()
 
     assert captured["args"][1] == input_file
+
+
+def test_shim_nonprotected_metadata_uncertainty_passes_through_even_when_strict(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    index_path = tmp_path / "plex-version-index.json"
+    captured = {}
+
+    input_file = "/media/movie-480-sdr.mkv"
+    fallback_file = "/media/movie-360-sdr.mkv"
+    index_path.write_text(
+        json.dumps(
+            compact_v2_index(
+                input_file,
+                fallback_file,
+                target_height=480,
+                fallback_height=360,
+                rating_key="rk-nonprotected",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(shim, "VERSION_INDEX_FILE", str(index_path), raising=False)
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", True, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "plex_fetch_full_metadata", lambda rating_key: None)
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"real": real_path, "args": list(args)}))
+
+    shim.main()
+
+    assert captured["args"][captured["args"].index("-i") + 1] == input_file
 
 
 def test_shim_blocks_unknown_actual_height_before_passthrough(monkeypatch, tmp_path):

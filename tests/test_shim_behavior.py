@@ -1523,6 +1523,53 @@ def test_shim_passes_through_if_budget_expires_during_lookup_even_when_strict(mo
     assert captured["args"][1] == input_file
 
 
+def test_shim_blocks_unknown_actual_height_before_passthrough(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    input_file = "/media/Neutral Name.mkv"
+    captured = {"exec_called": False}
+
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "plex_find_item_by_file", lambda path: None)
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"exec_called": True}))
+
+    with pytest.raises(SystemExit) as exc:
+        shim.main()
+
+    assert exc.value.code == 1
+    assert captured["exec_called"] is False
+
+
+def test_shim_blocks_unknown_actual_height_on_budget_exhaustion(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    input_file = "/media/Neutral Name.mkv"
+    captured = {"exec_called": False}
+    ticks = iter([1000.0, 1000.0, 1101.0, 1101.0])
+
+    monkeypatch.setattr(shim, "ENABLE_CACHE", False, raising=False)
+    monkeypatch.setattr(shim, "DECISION_BUDGET_MS", 100, raising=False)
+    monkeypatch.setattr(shim, "KILL_TRANSCODE_IF_UNSURE", False, raising=False)
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim, "monotonic_ms", lambda: next(ticks, 1101.0))
+    monkeypatch.setattr(shim, "plex_find_item_by_file", lambda path: None)
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", input_file, "-f", "dash", "chunk"])
+    monkeypatch.setattr(shim, "exec_real_transcoder", lambda real_path, args: captured.update({"exec_called": True}))
+
+    with pytest.raises(SystemExit) as exc:
+        shim.main()
+
+    assert exc.value.code == 1
+    assert captured["exec_called"] is False
+
+
 def test_shim_version_index_hit_with_sibling_metadata_still_fetches_live_metadata(monkeypatch, tmp_path):
     shim = load_shim()
     real = tmp_path / "Plex Transcoder.downshiftarr-real"

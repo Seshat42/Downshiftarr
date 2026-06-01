@@ -638,6 +638,26 @@ def block_4k_transcode(reason: str, decision_start_ms: float) -> None:
     sys.exit(1)
 
 
+def source_actual_height_unproven(input_file: str, current: Optional["MediaInfo"]) -> bool:
+    """Return true when neither Plex metadata nor an explicit filename token proves source height."""
+    if current is not None and current.height is not None:
+        return False
+    return file_path_height_hint(input_file) is None
+
+
+def block_unknown_actual_height(input_file: str, decision_start_ms: float, reason: str) -> None:
+    log(
+        "ERROR",
+        f"Policy: blocking transcode with unknown actual source height ({reason}); file={os.path.basename(input_file)}",
+    )
+    record_telemetry(
+        "unknown_actual_height_blocked",
+        elapsed_ms=monotonic_ms() - decision_start_ms,
+        index_status=VERSION_INDEX_LAST_STATUS,
+    )
+    sys.exit(1)
+
+
 # =====================================================================================
 # Helpers: Plex HTTP
 # =====================================================================================
@@ -1933,6 +1953,8 @@ def main() -> None:
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("decision budget exhausted before lookup", decision_start_ms)
+        if source_actual_height_unproven(input_file, preverified_current):
+            block_unknown_actual_height(input_file, decision_start_ms, "decision budget exhausted before lookup")
         exec_real_transcoder(real, args)
         return
 
@@ -1943,6 +1965,8 @@ def main() -> None:
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("decision budget exhausted during lookup", decision_start_ms)
+        if source_actual_height_unproven(input_file, preverified_current):
+            block_unknown_actual_height(input_file, decision_start_ms, "decision budget exhausted during lookup")
         exec_real_transcoder(real, args)
         return
     if not found:
@@ -1950,6 +1974,8 @@ def main() -> None:
         record_telemetry("lookup_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("lookup uncertain", decision_start_ms)
+        if source_actual_height_unproven(input_file, preverified_current):
+            block_unknown_actual_height(input_file, decision_start_ms, "lookup uncertain")
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -1960,8 +1986,11 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted after Plex lookup; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        found_current = find_current_media(found[1], input_file) if found else preverified_current
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("decision budget exhausted after lookup", decision_start_ms)
+        if source_actual_height_unproven(input_file, found_current):
+            block_unknown_actual_height(input_file, decision_start_ms, "decision budget exhausted after lookup")
         exec_real_transcoder(real, args)
         return
 
@@ -1983,8 +2012,11 @@ def main() -> None:
     if budget_exhausted(decision_start_ms):
         log("WARNING", f"Decision budget exhausted before full metadata; passing through budget_ms={DECISION_BUDGET_MS}")
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
+        current_search = find_current_media(search_item, input_file)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("decision budget exhausted before metadata", decision_start_ms)
+        if source_actual_height_unproven(input_file, current_search):
+            block_unknown_actual_height(input_file, decision_start_ms, "decision budget exhausted before metadata")
         exec_real_transcoder(real, args)
         return
 
@@ -2006,6 +2038,8 @@ def main() -> None:
         record_telemetry("budget_passthrough", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("decision budget exhausted during metadata", decision_start_ms)
+        if source_actual_height_unproven(input_file, current_quick_for_retry):
+            block_unknown_actual_height(input_file, decision_start_ms, "decision budget exhausted during metadata")
         exec_real_transcoder(real, args)
         return
     if not full_item:
@@ -2013,6 +2047,8 @@ def main() -> None:
         record_telemetry("metadata_failed", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("metadata unavailable", decision_start_ms)
+        if source_actual_height_unproven(input_file, current_quick_for_retry):
+            block_unknown_actual_height(input_file, decision_start_ms, "metadata unavailable")
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)
@@ -2025,6 +2061,8 @@ def main() -> None:
         record_telemetry("current_media_miss", elapsed_ms=monotonic_ms() - decision_start_ms, index_status=VERSION_INDEX_LAST_STATUS)
         if input_looks_4k and not FOUR_K_TRANSCODE_ALLOWED:
             block_4k_transcode("current 4K media not verified", decision_start_ms)
+        if source_actual_height_unproven(input_file, current_quick_for_retry):
+            block_unknown_actual_height(input_file, decision_start_ms, "current media not verified")
         if KILL_TRANSCODE_IF_UNSURE:
             log("ERROR", "Policy: killing streaming transcode because we are unsure (KILL_TRANSCODE_IF_UNSURE=1)")
             sys.exit(1)

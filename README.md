@@ -55,6 +55,7 @@ The optional **Plex Transcoder shim** runs *before* Downshiftarr.py ever gets an
 - The shim detects whether the transcode input is protected (>1080 actual height by default).
 - If protected, it tries to **waterfall** to a compliant sibling version (e.g. 1080p SDR).
 - If an already downshifted SDR version is still being transcoded, it can continue the waterfall to 720p, 576p, 480p, and 360p versions.
+- If Plex metadata and the v2 locator cannot prove the actual source height, the shim blocks before invoking the real transcoder. A neutral filename must not become a loophole for protected `>1080` media.
 - If no safe sibling is available, it can **fail-closed** immediately so the protected transcode never starts.
 
 Think of it like the movie theater ticket window (shim) + the usher who tears your ticket stub (Downshiftarr.py).
@@ -178,6 +179,7 @@ Key settings youâ€™ll care about first:
 - `ENABLE_SECTION_SCAN_FALLBACK` - default `True`; if the v2 locator misses, the shim tries the matching library section by location and exact `Part` path. Section scans locate the item only; swaps still require `/library/metadata/{ratingKey}`.
 - `PROTECTED_SOURCE_MIN_HEIGHT` - default `1081`; `MAX_ALLOWED_HEIGHT` remains a compatibility alias.
 - `REMUX_1080_MIN_BITRATE_KBPS` - default `25000`; 1080p sources at or above this bitrate are remux-like for waterfall preference. They are not hard-blocked unless `HARD_PROTECT_1080_REMUX` is explicitly enabled.
+- Unknown actual-height policy: if neither the fresh v2 locator/full Plex metadata path nor an explicit filename token proves the source height before pass-through, the shim fails closed and records `unknown_actual_height_blocked`.
 - `MAX_FALLBACK_HEIGHT` â€“ default `1080`.
 - `PREFER_HEIGHTS` â€“ default `(1080, 720, 576, 480, 360)`.
 - `FALLBACK_SDR_ONLY` â€“ default `True` (recommended).

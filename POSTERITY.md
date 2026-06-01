@@ -212,3 +212,8 @@ This file preserves durable project context, decisions, Q&A, and verification ex
 - Q: How should v1 indexes behave now? A: Delete v1 support. Any non-v2 index is invalid and may only lead to live lookup or protected blocking.
 - Q: Which rating key should the Tautulli script trust? A: Prefer the matched Plex session `ratingKey`; if the Tautulli event key disagrees, log a sanitized mismatch and use the session authority.
 - Implementation note: swaps now require explicit `/library/metadata/{ratingKey}` metadata; numeric `fetchItem` fallback is not allowed to authorize version selection.
+
+## 2026-05-31 Unknown Actual-Height Fail-Closed Source Update
+
+- Q: Can the Plex Transcoder shim pass through a streaming transcode when the source filename is neutral and neither the v2 path locator nor authoritative Plex metadata proves actual height before the decision budget expires? A: No. The shim now treats unknown actual height as fail-closed before invoking the real Plex Transcoder, records `unknown_actual_height_blocked`, and preserves normal pass-through only when metadata or an explicit resolution token proves the source is not protected.
+- Implementation note: this moves the Bragi safety behavior into the Downshiftarr source repo so deployment no longer depends on an install-time source patch for `unknown_actual_height_blocks=pass`.

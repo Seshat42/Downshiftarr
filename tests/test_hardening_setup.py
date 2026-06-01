@@ -69,9 +69,19 @@ def test_verify_hardening_setup_builds_non_campaign_checks():
 
     assert "hardening-run-list" in names
     assert "hardening-pytest-collect" in names
-    assert "atheris-python311-import" in names
+    assert "atheris-python311-import" in names or "native-fuzz-target-list-windows" in names
     assert "mutmut-import" in names
     assert all("run_mutation.py" not in " ".join(check.command) or "--list-targets" in check.command for check in checks)
+
+
+def test_verify_hardening_setup_uses_target_listing_for_native_fuzz_on_windows(monkeypatch):
+    verify = importlib.import_module("scripts.testing.verify_hardening_setup")
+    monkeypatch.setattr(verify.sys, "platform", "win32")
+
+    check = verify.native_fuzz_setup_check()
+
+    assert check.name == "native-fuzz-target-list-windows"
+    assert check.command == [verify.sys.executable, "scripts/testing/run_native_fuzz.py", "--list-targets"]
 
 
 def test_hardening_secret_redaction_masks_environment_values(monkeypatch):

@@ -33,6 +33,7 @@ def test_build_gates_include_official_local_verification_sequence():
         "-m",
         verify_local.non_destructive_marker_expression(),
     ]
+    assert gates[8].command == [verify_local.sys.executable, "scripts/testing/verify_local.py", "--bandit-check-only"]
     assert gates[9].command[:3] == ["gitleaks", "detect", "--source"]
     assert gates[-2].command == [verify_local.sys.executable, "scripts/testing/verify_local.py", "--storage-only-check-only"]
 
@@ -77,6 +78,33 @@ def test_static_token_check_allows_header_token_usage(tmp_path, monkeypatch):
     monkeypatch.setattr(verify_local, "REPO_ROOT", tmp_path)
 
     assert verify_local.run_static_token_check() == 0
+
+
+def test_bandit_baseline_normalization_uses_current_platform_separator():
+    baseline = {
+        "metrics": {"./Downshiftarr.py": {}, ".\\Plex Transcoder": {}, "_totals": {}},
+        "results": [
+            {"filename": "./Downshiftarr.py", "test_id": "B110"},
+            {"filename": ".\\Plex Transcoder", "test_id": "B310"},
+        ],
+    }
+
+    normalized = verify_local.normalize_bandit_baseline_for_platform(baseline)
+
+    assert "." + verify_local.os.sep + "Downshiftarr.py" in normalized["metrics"]
+    assert "." + verify_local.os.sep + "Plex Transcoder" in normalized["metrics"]
+    assert "_totals" in normalized["metrics"]
+    assert [entry["filename"] for entry in normalized["results"]] == [
+        "." + verify_local.os.sep + "Downshiftarr.py",
+        "." + verify_local.os.sep + "Plex Transcoder",
+    ]
+
+
+def test_bandit_check_only_skips_external_tool_detection(monkeypatch):
+    monkeypatch.setattr(verify_local, "missing_required_tools", lambda: pytest.fail("tool detection should not run"))
+    monkeypatch.setattr(verify_local, "run_bandit_check", lambda: 0)
+
+    assert verify_local.main(["--bandit-check-only"]) == 0
 
 
 def test_main_exits_before_gates_when_required_tools_missing(monkeypatch):

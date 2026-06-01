@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+BANDIT_BASELINE = REPO_ROOT / "docs/security/bandit-baseline.json"
 TOKEN_QUERY_PATTERNS = (
     re.compile(r"[?&](?:X-Plex-Token|PLEX_TOKEN|token)="),
     re.compile(r"X-Plex-Token\s*="),
@@ -71,22 +73,7 @@ def build_gates(
         Gate("ruff-check", ["uv", "run", "--locked", "ruff", "check", "."]),
         Gate("ruff-format", ["uv", "run", "--locked", "ruff", "format", "--check", "."]),
         Gate("pip-audit", ["uv", "run", "--locked", "pip-audit"]),
-        Gate(
-            "bandit",
-            [
-                "uv",
-                "run",
-                "--locked",
-                "bandit",
-                "-c",
-                "pyproject.toml",
-                "-r",
-                "Downshiftarr.py",
-                "Plex Transcoder",
-                "--baseline",
-                "docs/security/bandit-baseline.json",
-            ],
-        ),
+        Gate("bandit", [sys.executable, verify_local_script, "--bandit-check-only"]),
         Gate("gitleaks", [gitleaks, "detect", "--source", ".", "--config", ".gitleaks.toml", "--no-banner", "--redact"]),
         Gate("plex-token-query-static-check", [sys.executable, verify_local_script, "--static-token-check-only"]),
     ]
@@ -120,6 +107,65 @@ def run_static_token_check() -> int:
 
     print("No Plex token query-string construction found in source scripts.")
     return 0
+
+
+def normalize_bandit_filename(filename: str) -> str:
+    rel = filename.replace("\\", "/")
+    if rel.startswith("./"):
+        rel = rel[2:]
+    elif rel.startswith(".\\"):
+        rel = rel[2:]
+    return "." + os.sep + rel.replace("/", os.sep)
+
+
+def normalize_bandit_baseline_for_platform(baseline: dict) -> dict:
+    normalized = dict(baseline)
+    metrics = baseline.get("metrics")
+    if isinstance(metrics, dict):
+        normalized_metrics = {}
+        for key, value in metrics.items():
+            normalized_metrics[normalize_bandit_filename(key) if key != "_totals" else key] = value
+        normalized["metrics"] = normalized_metrics
+
+    results = []
+    for result in baseline.get("results", []):
+        if not isinstance(result, dict):
+            results.append(result)
+            continue
+        fixed = dict(result)
+        if isinstance(fixed.get("filename"), str):
+            fixed["filename"] = normalize_bandit_filename(fixed["filename"])
+        results.append(fixed)
+    normalized["results"] = results
+    return normalized
+
+
+def write_normalized_bandit_baseline() -> Path:
+    baseline = json.loads(BANDIT_BASELINE.read_text(encoding="utf-8"))
+    normalized = normalize_bandit_baseline_for_platform(baseline)
+    tmp_dir = REPO_ROOT / ".pytest_cache" / "verify-local"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    path = tmp_dir / "bandit-baseline.normalized.json"
+    path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def run_bandit_check() -> int:
+    baseline = write_normalized_bandit_baseline()
+    command = [
+        "uv",
+        "run",
+        "--locked",
+        "bandit",
+        "-c",
+        "pyproject.toml",
+        "-r",
+        "Downshiftarr.py",
+        "Plex Transcoder",
+        "--baseline",
+        str(baseline),
+    ]
+    return subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
 
 
 def remote_branch_names() -> list[str]:
@@ -206,10 +252,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--python", default="3.12", help="Python version passed to uv sync.")
     parser.add_argument("--ci", action="store_true", help="Legacy alias for local extra hygiene; does not imply GitHub CI authority.")
     parser.add_argument("--hardening-setup", action="store_true", help="Verify hardening setup without running hardening campaigns.")
+    parser.add_argument("--bandit-check-only", action="store_true", help="Run Bandit with a platform-normalized baseline.")
     parser.add_argument("--static-token-check-only", action="store_true", help="Run only the Plex token transport static check.")
     parser.add_argument("--storage-only-check-only", action="store_true", help="Run only the local GitHub storage-only policy check.")
     args = parser.parse_args(argv)
 
+    if args.bandit_check_only:
+        return run_bandit_check()
     if args.static_token_check_only:
         return run_static_token_check()
     if args.storage_only_check_only:

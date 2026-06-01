@@ -64,7 +64,8 @@ Required gates for security-sensitive changes:
 - Ruff lint and format checks through the repo `pyproject.toml`.
 - Dependency audit through `pip-audit`.
 - Bandit over `Downshiftarr.py` and `Plex Transcoder` with `docs/security/bandit-baseline.json` as the committed
-  bootstrap baseline. New findings above that baseline must be fixed or deliberately re-baselined with review notes.
+  bootstrap baseline. The local verifier normalizes baseline path separators at runtime so Windows and Linux enforce
+  the same reviewed findings. New findings above that baseline must be fixed or deliberately re-baselined with review notes.
 - Secret scan over tracked source and docs.
 - Static check that real tokens are not present in committed files.
 - Regression tests for token redaction in logging and notification paths.
@@ -75,7 +76,8 @@ Required gates for security-sensitive changes:
 
 - Fuzz, property-based, monkey, chaos, mutation, and boundary lanes are manual hardening campaigns, not default gates.
 - The default non-destructive test lane excludes `property`, `fuzz`, `native_fuzz`, `monkey`, `chaos`, `mutation`, and `boundary`.
-- Native fuzzing uses Atheris through the WSL Python 3.11 lane; normal local verification remains on Python 3.12.
+- Native fuzzing uses Atheris through the WSL/Linux Python 3.11 lane; normal local verification remains on Python 3.12.
+  On Windows, setup verification lists the native-fuzz targets instead of building Atheris because that libFuzzer lane is not portable there.
 - Native fuzz, monkey, chaos, and mutation runners require `DOWNSHIFTARR_HARDENING_MANUAL=1` plus an explicit `--run`.
 - Hardening runners must use synthetic/fake inputs by default and must not contact Loki, Tautulli, Plex Web, browser sessions, Docker sidecars, or external Plex servers.
 - Hardening corpora, crashes, reports, and caches belong only in ignored locations such as `.hypothesis/`, `.mutmut-cache/`, and `artifacts/hardening/`.

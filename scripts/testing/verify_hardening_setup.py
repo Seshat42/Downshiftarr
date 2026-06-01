@@ -28,25 +28,31 @@ def missing_required_tools() -> list[str]:
     return [tool for tool in ("git", "uv") if shutil.which(tool) is None]
 
 
+def native_fuzz_setup_check() -> Check:
+    if sys.platform.startswith("win"):
+        return Check("native-fuzz-target-list-windows", [sys.executable, "scripts/testing/run_native_fuzz.py", "--list-targets"])
+    return Check(
+        "atheris-python311-import",
+        [
+            "uv",
+            "run",
+            "--isolated",
+            "--python",
+            "3.11",
+            "--group",
+            "native-fuzz",
+            "python",
+            "-c",
+            "import atheris; print('atheris ok')",
+        ],
+    )
+
+
 def build_checks() -> list[Check]:
     return [
         Check("hardening-run-list", [sys.executable, "scripts/testing/list_hardening_runs.py", "--check"]),
         Check("hardening-pytest-collect", ["uv", "run", "--locked", "pytest", "--collect-only", "-q", "-m", HARDENING_MARKER_EXPR]),
-        Check(
-            "atheris-python311-import",
-            [
-                "uv",
-                "run",
-                "--isolated",
-                "--python",
-                "3.11",
-                "--group",
-                "native-fuzz",
-                "python",
-                "-c",
-                "import atheris; print('atheris ok')",
-            ],
-        ),
+        native_fuzz_setup_check(),
         Check("mutmut-import", ["uv", "run", "--locked", "python", "-c", "import mutmut; print('mutmut ok')"]),
     ]
 

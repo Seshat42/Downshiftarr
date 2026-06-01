@@ -407,6 +407,12 @@ def _reject_unsafe_parent_dirs(config_path: str) -> None:
     while True:
         if os.path.islink(parent):
             raise RuntimeError("Shim config parent directory must not be a symlink")
+        if os.name == "nt":
+            next_parent = os.path.dirname(parent)
+            if next_parent == parent:
+                break
+            parent = next_parent
+            continue
         st = os.stat(parent)
         world_writable = bool(st.st_mode & stat.S_IWOTH)
         group_writable = bool(st.st_mode & stat.S_IWGRP)
@@ -437,10 +443,11 @@ def _validate_external_config_file(config_path: str, handle) -> None:
     st = os.fstat(handle.fileno())
     if not stat.S_ISREG(st.st_mode):
         raise RuntimeError("Shim config file must be a regular file")
-    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise RuntimeError("Shim config file must not be writable by group or other")
-    if st.st_uid not in {0, os.getuid()}:
-        raise RuntimeError("Shim config file must be owned by root or the Plex service user")
+    if os.name != "nt":
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise RuntimeError("Shim config file must not be writable by group or other")
+        if st.st_uid not in {0, os.getuid()}:
+            raise RuntimeError("Shim config file must be owned by root or the Plex service user")
 
 
 def _read_plex_token_file(token_path: str) -> str:
@@ -460,10 +467,11 @@ def _read_plex_token_file(token_path: str) -> str:
             st = os.fstat(handle.fileno())
             if not stat.S_ISREG(st.st_mode):
                 raise RuntimeError("Plex token file must be a regular file")
-            if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH | stat.S_IROTH):
-                raise RuntimeError("Plex token file permissions are too open")
-            if st.st_uid not in {0, os.getuid()}:
-                raise RuntimeError("Plex token file must be owned by root or the Plex service user")
+            if os.name != "nt":
+                if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH | stat.S_IROTH):
+                    raise RuntimeError("Plex token file permissions are too open")
+                if st.st_uid not in {0, os.getuid()}:
+                    raise RuntimeError("Plex token file must be owned by root or the Plex service user")
             if st.st_size > 8192:
                 raise RuntimeError("Plex token file is unexpectedly large")
             token = handle.readline().strip()

@@ -77,7 +77,7 @@ def run_client_event_matrix(rng: random.Random, iterations: int) -> dict[str, in
         assert context is not None
         found_client, _ = Downshiftarr.find_client(plex, context, event.machine_id)
         assert found_client is client
-        current_id, current_height, current_dr = Downshiftarr.current_media_identity(session)
+        current_id, current_height, current_dr, _current_path = Downshiftarr.current_media_identity(session)
         if not Downshiftarr.is_high_quality(current_height, current_dr):
             ignored += 1
             continue

@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -714,6 +715,8 @@ def test_shim_rejects_relative_external_config_path(monkeypatch):
 
 
 def test_shim_rejects_symlink_external_config(monkeypatch, tmp_path):
+    if os.name == "nt":
+        pytest.skip("Windows test host lacks portable symlink semantics for POSIX shim hardening")
     target = tmp_path / "shim-config.json"
     target.write_text("{}", encoding="utf-8")
     target.chmod(0o600)
@@ -726,6 +729,8 @@ def test_shim_rejects_symlink_external_config(monkeypatch, tmp_path):
 
 
 def test_shim_rejects_group_or_world_writable_external_config(monkeypatch, tmp_path):
+    if os.name == "nt":
+        pytest.skip("Windows chmod does not model POSIX group/world write bits reliably")
     config_path = tmp_path / "shim-config.json"
     config_path.write_text("{}", encoding="utf-8")
     config_path.chmod(0o666)
@@ -746,6 +751,8 @@ def test_shim_rejects_empty_external_transcoder_suffix(monkeypatch, tmp_path):
 
 
 def test_shim_rejects_unsafe_token_file(monkeypatch, tmp_path):
+    if os.name == "nt":
+        pytest.skip("Windows chmod does not model POSIX token-file permissions reliably")
     token_path = tmp_path / "plex-token"
     token_path.write_text("file-token\n", encoding="utf-8")
     token_path.chmod(0o606)
@@ -764,6 +771,8 @@ def test_shim_rejects_unsafe_token_file(monkeypatch, tmp_path):
 
 
 def test_shim_rejects_symlink_token_file(monkeypatch, tmp_path):
+    if os.name == "nt":
+        pytest.skip("Windows test host lacks portable symlink semantics for POSIX shim hardening")
     target = tmp_path / "plex-token"
     target.write_text("file-token\n", encoding="utf-8")
     target.chmod(0o600)

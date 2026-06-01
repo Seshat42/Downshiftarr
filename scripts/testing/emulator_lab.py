@@ -98,12 +98,19 @@ def command_path(command: str) -> str | None:
     found = shutil.which(command)
     if found:
         return found
+    suffixes = ("", ".exe", ".bat", ".cmd")
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        for suffix in suffixes:
+            candidate = Path(directory) / f"{command}{suffix}"
+            if candidate.exists():
+                return str(candidate)
     tool_dirs = (
         LOCAL_LAB_ROOT / "android-sdk" / "platform-tools",
         LOCAL_LAB_ROOT / "android-sdk" / "emulator",
         LOCAL_LAB_ROOT / "android-sdk" / "cmdline-tools" / "latest" / "bin",
     )
-    suffixes = ("", ".exe", ".bat", ".cmd")
     for directory in tool_dirs:
         for suffix in suffixes:
             candidate = directory / f"{command}{suffix}"

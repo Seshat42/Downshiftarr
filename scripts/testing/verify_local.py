@@ -61,6 +61,7 @@ def build_gates(
     hardening_setup: bool = False,
 ) -> list[Gate]:
     gitleaks = gitleaks_bin or resolve_gitleaks_bin()
+    verify_local_script = Path(__file__).relative_to(REPO_ROOT).as_posix()
     gates = [
         Gate("status", ["git", "status", "--short", "--branch", "--untracked-files=all"]),
         Gate("sync", ["uv", "sync", "--all-groups", "--python", python_version, "--locked"]),
@@ -87,13 +88,13 @@ def build_gates(
             ],
         ),
         Gate("gitleaks", [gitleaks, "detect", "--source", ".", "--config", ".gitleaks.toml", "--no-banner", "--redact"]),
-        Gate("plex-token-query-static-check", [sys.executable, str(Path(__file__).relative_to(REPO_ROOT)), "--static-token-check-only"]),
+        Gate("plex-token-query-static-check", [sys.executable, verify_local_script, "--static-token-check-only"]),
     ]
     if ci:
         gates.append(Gate("secret-hygiene", [sys.executable, "scripts/testing/verify_secret_hygiene.py"]))
     if hardening_setup:
         gates.append(Gate("hardening-setup", [sys.executable, "scripts/testing/verify_hardening_setup.py"]))
-    gates.append(Gate("github-storage-only", [sys.executable, str(Path(__file__).relative_to(REPO_ROOT)), "--storage-only-check-only"]))
+    gates.append(Gate("github-storage-only", [sys.executable, verify_local_script, "--storage-only-check-only"]))
     gates.append(Gate("diff-check", ["git", "diff", "--check"]))
     return gates
 

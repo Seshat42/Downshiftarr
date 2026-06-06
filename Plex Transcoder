@@ -279,6 +279,24 @@ VIDEO_EXTENSIONS: Tuple[str, ...] = (
     ".mpg",
 )
 
+# Live TV/DVR/tuner streams must stay untouched. Plex can legitimately invoke
+# the transcoder for tuner workloads, and Downshiftarr's version waterfall model
+# applies to library Plex Versions, not ephemeral Live TV inputs.
+LIVE_TV_BYPASS_MARKERS: Tuple[str, ...] = (
+    "/livetv/",
+    "live tv",
+    "live-tv",
+    "/hdhr/",
+    "hdhomerun",
+    "tv.plex.grabbers.hdhomerun",
+    "dispatcharr",
+    "10.67.0.1:9191",
+    "127.0.0.1:9191",
+    "172.17.0.1:9191",
+    ":9191/hdhr",
+    ":9191/stream",
+)
+
 
 # --- 11) External config -------------------------------------------------------------
 
@@ -1019,14 +1037,26 @@ def looks_like_video_path(p: str) -> bool:
     return any(s.endswith(ext) for ext in VIDEO_EXTENSIONS)
 
 
+def args_indicate_live_tv(args: Sequence[str]) -> bool:
+    """Return true for Plex Live TV/DVR/tuner inputs that must not be touched."""
+    for raw in args:
+        text = urllib.parse.unquote(str(raw or "")).strip().lower()
+        if not text:
+            continue
+        parsed = urllib.parse.urlparse(text)
+        if parsed.netloc.endswith(":9191") and any(part in parsed.path for part in ("/hdhr", "/stream", "/auto/")):
+            return True
+        if any(marker in text for marker in LIVE_TV_BYPASS_MARKERS):
+            return True
+    return False
+
+
 def is_streaming_transcode(args: Sequence[str]) -> bool:
     """Heuristic to avoid messing with non-streaming transcoder jobs.
 
     Streaming transcodes almost always output DASH or HLS segments.
     """
-    # Quick keyword checks first.
-    joined = " ".join(args).lower()
-    if any(k in joined for k in ("-dash_segment_type", "-seg_duration", "-segment_list", "-segment_time", "seglist")):
+    if any(a in ("-dash_segment_type", "-seg_duration", "-segment_list", "-segment_time") for a in args):
         return True
 
     # Check explicit output format.
@@ -1072,13 +1102,19 @@ def video_codec_is_copy(args: Sequence[str], input_value_index: int) -> bool:
 
 
 _STREAM_REF_RE = re.compile(r"(?<!\d)0:(\d+)")
+_FILTER_STREAM_REF_RE = re.compile(r"\[(?:in)?0:(\d+)[^\]]*\]")
 
 
 def required_max_input_stream_index(args: Sequence[str]) -> Optional[int]:
     """Parse the transcoder args to find the highest referenced input stream index (0:<n>)."""
     max_idx: Optional[int] = None
-    for a in args:
-        for m in _STREAM_REF_RE.finditer(a):
+    selector_options = {"-map", "-filter_complex", "-filter_complex_script", "-vf", "-filter:v"}
+    for i, a in enumerate(args):
+        if a not in selector_options or i + 1 >= len(args):
+            continue
+        value = args[i + 1]
+        refs = _FILTER_STREAM_REF_RE.finditer(value) if a in {"-filter_complex", "-filter_complex_script", "-vf", "-filter:v"} else _STREAM_REF_RE.finditer(value)
+        for m in refs:
             n = safe_int(m.group(1))
             if n is None:
                 continue
@@ -1098,8 +1134,13 @@ def args_indicate_hdr_tonemap(args: Sequence[str]) -> bool:
     """
     if not TREAT_TONEMAP_ARGS_AS_HDR:
         return False
-    blob = " ".join(args).lower()
-    return any(k in blob for k in ("tonemap", "libplacebo", "procamp"))
+    filter_options = {"-filter_complex", "-filter_complex_script", "-vf", "-filter:v"}
+    for i, a in enumerate(args):
+        if a in filter_options and i + 1 < len(args):
+            blob = str(args[i + 1]).lower()
+            if any(k in blob for k in ("tonemap", "libplacebo", "procamp")):
+                return True
+    return False
 
 
 # =====================================================================================
@@ -1816,7 +1857,7 @@ def _rewrite_filter_graph(filters: str) -> Tuple[str, bool]:
         if name == "zscale":
             # Don't nuke zscale if it looks like it's doing resizing. (zscale used for HDR colorspace conversion typically has t=/transfer=/npl=/primaries=/matrix=)
             o = opts.lower()
-            if "w=" in o or "h=" in o:
+            if "w=" in o or "h=" in o or "size=" in o or "s=" in o:
                 return prefix + name + opts
             return prefix + "null"
 
@@ -1854,7 +1895,7 @@ def rewrite_args_for_performance(
         # Bitrate limit stripping: only after the input, so we don't touch decoder hints.
         if REMOVE_BITRATE_LIMITS and input_value_index >= 0 and i > input_value_index:
             if a in ("-b", "-b:v", "-maxrate", "-bufsize") or a.startswith("-b:") or a.startswith("-maxrate:") or a.startswith("-bufsize:"):
-                if i + 1 < len(args):
+                if i + 1 < len(args) and not str(args[i + 1]).startswith("-"):
                     log("DEBUG", f"Optimization: removed bitrate option {a} {args[i + 1]}")
                     i += 2
                     continue
@@ -1935,6 +1976,10 @@ def main() -> None:
     if not os.path.exists(real):
         log("ERROR", f"Real transcoder not found at '{real}'. Check REAL_TRANSCODER_PATH / rename suffix.")
         sys.exit(1)
+
+    if args_indicate_live_tv(args):
+        exec_real_transcoder(real, args)
+        return
 
     # Scope limiter: avoid touching non-streaming jobs.
     if ONLY_INTERCEPT_STREAMING_TRANSCODES and not is_streaming_transcode(args):

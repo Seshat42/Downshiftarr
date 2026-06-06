@@ -673,6 +673,9 @@ class InputEvent:
     video_resolution: Optional[str] = None
     stream_video_resolution: Optional[str] = None
     video_dynamic_range: Optional[str] = None
+    media_type: Optional[str] = None
+    library_name: Optional[str] = None
+    section_type: Optional[str] = None
     # Optional: name of the trigger/action (if you pass it)
     action: Optional[str] = None
     # Optional sanitized adaptive-outcome ingestion. This path is intended for
@@ -801,6 +804,56 @@ def is_video_transcoding(video_decision: Optional[str]) -> bool:
     """
     d = normalize_decision(video_decision)
     return "transcode" in d and d not in ALLOW_VIDEO_DECISIONS
+
+
+LIVE_TV_EXACT_VALUES = (
+    "live",
+    "livetv",
+)
+LIVE_TV_MARKERS = (
+    "live tv",
+    "live-tv",
+    "dvr",
+    "tuner",
+    "hdhomerun",
+    "dispatcharr",
+    "tv.plex.grabbers.hdhomerun",
+)
+
+
+def _live_tv_text_match(value: Optional[Any]) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if text in LIVE_TV_EXACT_VALUES:
+        return True
+    return any(marker in text for marker in LIVE_TV_MARKERS)
+
+
+def is_live_tv_event(ev: InputEvent) -> bool:
+    """Return true when Tautulli/Plex flags this event as Live TV/DVR/tuner playback."""
+    explicit = (
+        ev.media_type,
+        ev.library_name,
+        ev.section_type,
+        ev.action,
+    )
+    return any(_live_tv_text_match(value) for value in explicit)
+
+
+def is_live_tv_session_item(session_item: Any) -> bool:
+    """Best-effort Live TV guard for cases where the Tautulli event lacked explicit hints."""
+    fields = (
+        getattr(session_item, "type", None),
+        getattr(session_item, "TYPE", None),
+        getattr(session_item, "mediaType", None),
+        getattr(session_item, "librarySectionTitle", None),
+        getattr(session_item, "librarySectionType", None),
+        getattr(session_item, "guid", None),
+        getattr(session_item, "key", None),
+        getattr(session_item, "ratingKey", None),
+    )
+    return any(_live_tv_text_match(value) for value in fields)
 
 
 def safe_int(x: Any) -> Optional[int]:
@@ -1540,6 +1593,12 @@ def parse_args(argv: List[str]) -> InputEvent:
                 ev.stream_video_resolution = val
             elif key in ("video_dynamic_range", "videodynamicrange", "dynamic_range", "dynamicrange"):
                 ev.video_dynamic_range = val
+            elif key in ("media_type", "mediatype", "type"):
+                ev.media_type = val
+            elif key in ("library_name", "libraryname", "library_section_title", "librarysectiontitle", "section_title", "sectiontitle"):
+                ev.library_name = val
+            elif key in ("section_type", "sectiontype", "library_section_type", "librarysectiontype"):
+                ev.section_type = val
             elif key in ("action", "trigger", "event"):
                 ev.action = val
             elif key in ("adaptive_outcome", "adaptiveoutcome", "outcome"):
@@ -1622,6 +1681,10 @@ def main(argv: List[str]) -> int:
         log_event("DEBUG", "Decision=%r is not a video transcode. No action." % (ev.video_decision,), ev=ev)
         return 0
 
+    if is_live_tv_event(ev):
+        log_event("DEBUG", "Live TV/DVR event detected. Downshiftarr bypassing without Plex lookup.", ev=ev)
+        return 0
+
     # Connect to Plex
     plex = None
     try:
@@ -1639,6 +1702,10 @@ def main(argv: List[str]) -> int:
         log_event("WARNING", "Unable to match Plex session for this event.", ev=ev)
         if KILL_ON_SESSION_NOT_FOUND:
             terminate_best_effort(plex, ev, None, KILL_MESSAGE_SESSION_NOT_FOUND)
+        return 0
+
+    if is_live_tv_session_item(ctx.session_item):
+        log_event("DEBUG", "Live TV/DVR session detected. Downshiftarr bypassing without remote control.", ev=ev, ctx=ctx)
         return 0
 
     # Confirm current media identity (source-of-truth)

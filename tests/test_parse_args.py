@@ -30,6 +30,22 @@ def test_parse_args_flag_mode_normalization():
     assert ev.video_dynamic_range == "hdr"
 
 
+def test_parse_args_flag_mode_live_tv_fields():
+    argv = [
+        "script.py",
+        "--media-type=live",
+        "--library-name",
+        "Live TV",
+        "--section-type",
+        "livetv",
+    ]
+    ev = parse_args(argv)
+
+    assert ev.media_type == "live"
+    assert ev.library_name == "Live TV"
+    assert ev.section_type == "livetv"
+
+
 def test_parse_args_positional_mode_valid():
     argv8 = ["script.py", "rk1", "mi1", "u1", "s1", "uid1", "rh1", "vd1"]
     ev8 = parse_args(argv8)

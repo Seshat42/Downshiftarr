@@ -39,13 +39,14 @@ def test_hardening_run_list_prints_required_manual_commands():
 
     assert completed.returncode == 0, completed.stderr
     output = completed.stdout
-    assert "uv run pytest -m boundary" in output
-    assert "uv run pytest -m property" in output
-    assert "uv run pytest -m fuzz" in output
-    assert "uv run --python 3.11 python scripts/testing/run_native_fuzz.py --list-targets" in output
-    assert "uv run python scripts/testing/run_monkey.py --list-scenarios" in output
-    assert "uv run python scripts/testing/run_chaos.py --list-scenarios" in output
-    assert "uv run python scripts/testing/run_mutation.py --list-targets" in output
+    assert "UV_LINK_MODE=copy uv run --locked pytest -m boundary" in output
+    assert "UV_LINK_MODE=copy uv run --locked pytest -m property" in output
+    assert "UV_LINK_MODE=copy uv run --locked pytest -m fuzz" in output
+    assert "UV_LINK_MODE=copy uv run --locked python scripts/testing/run_native_fuzz.py --list-targets" in output
+    assert "scripts/testing/run_native_fuzz.py --target shim-parsers --runs 100000 --max-total-time 300 --run" in output
+    assert "UV_LINK_MODE=copy uv run --locked python scripts/testing/run_monkey.py --list-scenarios" in output
+    assert "UV_LINK_MODE=copy uv run --locked python scripts/testing/run_chaos.py --list-scenarios" in output
+    assert "UV_LINK_MODE=copy uv run --locked python scripts/testing/run_mutation.py --list-targets" in output
 
 
 def test_hardening_runners_default_to_listing_or_dry_run_only():

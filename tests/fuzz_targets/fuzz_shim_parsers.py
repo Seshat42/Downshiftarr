@@ -29,6 +29,8 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 - Atheris entrypoint conven
     provider = atheris.FuzzedDataProvider(data)
     args = [provider.ConsumeUnicodeNoSurrogates(48) for _ in range(provider.ConsumeIntInRange(0, 24))]
     filter_graph = provider.ConsumeUnicodeNoSurrogates(512)
+    current_file = provider.ConsumeUnicodeNoSurrogates(64)
+    fallback_file = provider.ConsumeUnicodeNoSurrogates(64)
 
     primary, input_index = SHIM.find_primary_input(args)
     assert primary is None or isinstance(primary, str)
@@ -36,6 +38,9 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 - Atheris entrypoint conven
 
     max_stream = SHIM.required_max_input_stream_index(args)
     assert max_stream is None or max_stream >= 0
+    assert isinstance(SHIM.is_streaming_transcode(args), bool)
+    assert isinstance(SHIM.args_indicate_live_tv(args), bool)
+    assert isinstance(SHIM.args_indicate_hdr_tonemap(args), bool)
 
     rewritten_filter, _ = SHIM._rewrite_filter_graph(filter_graph)
     rewritten_again, _ = SHIM._rewrite_filter_graph(rewritten_filter)
@@ -51,6 +56,31 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 - Atheris entrypoint conven
         "Part": [{"file": provider.ConsumeUnicodeNoSurrogates(64), "Stream": [{"streamType": 1, "index": provider.ConsumeInt(8)}]}],
     }
     SHIM.build_media_info(media)
+
+    full_item = {
+        "Media": [
+            {
+                "height": provider.ConsumeIntInRange(1, 4320),
+                "videoDynamicRange": provider.ConsumeUnicodeNoSurrogates(32),
+                "Part": [{"file": current_file, "Stream": [{"streamType": 1, "index": provider.ConsumeInt(8)}]}],
+            },
+            {
+                "height": provider.ConsumeIntInRange(1, 2160),
+                "videoDynamicRange": provider.ConsumeUnicodeNoSurrogates(32),
+                "Part": [{"file": fallback_file, "Stream": [{"streamType": 1, "index": provider.ConsumeInt(8)}]}],
+            },
+        ]
+    }
+    cache_entry = SHIM.CacheEntry(
+        ts=1.0,
+        rating_key=provider.ConsumeUnicodeNoSurrogates(16),
+        fallback_file=fallback_file,
+        fallback_height=None,
+        fallback_dr=provider.ConsumeUnicodeNoSurrogates(32),
+        fallback_max_stream_index=None,
+    )
+    authoritative_fallback = SHIM.cache_entry_authoritative_fallback(full_item, current_file, cache_entry, max_stream)
+    assert authoritative_fallback is None or authoritative_fallback.file_path == fallback_file
 
 
 def main() -> None:

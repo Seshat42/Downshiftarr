@@ -29,6 +29,13 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 - Atheris entrypoint conven
     high_quality = Downshiftarr.is_high_quality(height, text)
     assert isinstance(high_quality, bool)
 
+    event = Downshiftarr.InputEvent(
+        media_type=text,
+        library_name=provider.ConsumeUnicodeNoSurrogates(256),
+        section_type=provider.ConsumeUnicodeNoSurrogates(64),
+    )
+    assert isinstance(Downshiftarr.is_live_tv_event(event), bool)
+
     media_obj = attr(
         height=text,
         videoHeight=provider.ConsumeUnicodeNoSurrogates(32),

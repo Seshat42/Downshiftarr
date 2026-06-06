@@ -741,6 +741,202 @@ def test_shim_rewrites_tonemap_filters_when_swapping_to_sdr(monkeypatch):
     assert all("tonemap=hable" not in arg for arg in rewritten)
 
 
+def test_shim_streaming_detection_ignores_streaming_words_in_filenames():
+    shim = load_shim()
+
+    args = ["-i", "/media/SegList Documentary 1080p.mkv", "-f", "mp4", "/tmp/out.mp4"]
+
+    assert not shim.is_streaming_transcode(args)
+    assert shim.is_streaming_transcode(["-i", "/media/movie.mkv", "-seg_duration", "4", "-f", "mp4"])
+    assert shim.is_streaming_transcode(["-i", "/media/movie.mkv", "-f", "dash", "chunk"])
+
+
+def test_shim_stream_reference_parser_ignores_metadata_text():
+    shim = load_shim()
+
+    args = [
+        "-i",
+        "/media/movie.mkv",
+        "-vf",
+        "drawtext=text=0:99",
+        "-map",
+        "0:2",
+        "-filter_complex",
+        "[0:3]scale=1280:-2[v]",
+    ]
+
+    assert shim.required_max_input_stream_index(["-vf", "drawtext=text=0:99"]) is None
+    assert shim.required_max_input_stream_index(args) == 3
+
+
+def test_shim_tonemap_detection_ignores_media_filenames(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "TREAT_TONEMAP_ARGS_AS_HDR", True)
+
+    assert not shim.args_indicate_hdr_tonemap(["-i", "/media/Tonemap Documentary 1080p.mkv", "-f", "mp4"])
+    assert shim.args_indicate_hdr_tonemap(["-i", "/media/movie.mkv", "-vf", "tonemap=hable"])
+
+
+def test_shim_primary_input_keeps_last_video_input_behavior():
+    shim = load_shim()
+
+    args = [
+        "-i",
+        "/media/main-feature-2160-hdr.mkv",
+        "-i",
+        "/media/bumper-1080-sdr.mp4",
+        "-f",
+        "dash",
+    ]
+
+    assert shim.find_primary_input(args) == ("/media/bumper-1080-sdr.mp4", 3)
+
+
+def test_shim_bypasses_live_tv_inputs_before_any_plex_lookup(monkeypatch, tmp_path):
+    shim = load_shim()
+    real = tmp_path / "Plex Transcoder.downshiftarr-real"
+    real.write_text("# real\n", encoding="utf-8")
+    real.chmod(0o755)
+    live_input = "http://10.67.0.1:9191/hdhr/auto/v1.ts"
+    captured = {}
+
+    monkeypatch.setattr(shim, "resolve_real_transcoder_path", lambda: str(real))
+    monkeypatch.setattr(shim.sys, "argv", ["Plex Transcoder", "-i", live_input, "-f", "dash", "chunk"])
+    monkeypatch.setattr(
+        shim,
+        "plex_find_item_by_file_via_version_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass version-index lookup")),
+    )
+    monkeypatch.setattr(
+        shim,
+        "plex_find_item_by_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass live Plex lookup")),
+    )
+    monkeypatch.setattr(shim, "_load_cache", lambda: (_ for _ in ()).throw(AssertionError("Live TV must bypass cache")))
+    monkeypatch.setattr(
+        shim,
+        "exec_real_transcoder",
+        lambda real_path, args: captured.update({"real_path": real_path, "args": list(args)}),
+    )
+
+    shim.main()
+
+    assert captured["real_path"] == str(real)
+    assert captured["args"] == ["-i", live_input, "-f", "dash", "chunk"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-i", "http://10.67.0.1:9191/hdhr/auto/v1.ts", "-f", "dash"],
+        ["-i", "http://10.67.0.1:9191/hdhr%2Fauto%2Fv1.ts", "-f", "dash"],
+        ["-i", "http://172.17.0.1:9191/stream/7.ts", "-f", "hls"],
+        ["-metadata", "service_name=Dispatcharr HDHomeRun", "-i", "/tmp/tuner-buffer.ts", "-f", "segment"],
+        ["-i", "/video/:/transcode/livetv/session/abc/seg.ts", "-f", "ssegment"],
+    ],
+)
+def test_shim_detects_live_tv_markers(args):
+    shim = load_shim()
+
+    assert shim.args_indicate_live_tv(args)
+
+
+def test_shim_live_tv_detection_does_not_match_ordinary_library_files():
+    shim = load_shim()
+
+    assert not shim.args_indicate_live_tv(["-i", "/media/Movies/Live Free or Die Hard (2007) - 1080p.mkv", "-f", "dash"])
+
+
+def test_shim_rewrite_preserves_output_codecs_and_resize_filters(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "REMOVE_BITRATE_LIMITS", True)
+    monkeypatch.setattr(shim, "STRIP_HDR_TONEMAP_FILTERS", True)
+
+    args = [
+        "-codec:0",
+        "truehd_eae",
+        "-i",
+        "/media/movie-2160-hdr.mkv",
+        "-c:v",
+        "libx264",
+        "-filter_complex",
+        "[0:v]zscale=w=1280:h=720,tonemap=hable,format=yuv420p[v]",
+        "-codec:1",
+        "aac",
+        "-maxrate",
+        "12000k",
+    ]
+
+    rewritten = shim.rewrite_args_for_performance(args, input_value_index=3, swapped_to_sdr=True)
+
+    assert "-codec:0" not in rewritten
+    assert "truehd_eae" not in rewritten
+    assert rewritten[rewritten.index("-c:v") + 1] == "libx264"
+    assert rewritten[rewritten.index("-codec:1") + 1] == "aac"
+    assert "-maxrate" not in rewritten
+    filter_graph = rewritten[rewritten.index("-filter_complex") + 1]
+    assert "zscale=w=1280:h=720" in filter_graph
+    assert "tonemap=hable" not in filter_graph
+
+
+def test_shim_rewrite_does_not_consume_next_option_when_bitrate_value_missing(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "REMOVE_BITRATE_LIMITS", True)
+    monkeypatch.setattr(shim, "STRIP_HDR_TONEMAP_FILTERS", True)
+
+    args = [
+        "-i",
+        "/media/movie-2160-hdr.mkv",
+        "-maxrate",
+        "-filter_complex",
+        "[0:v]tonemap=hable,format=yuv420p[v]",
+    ]
+
+    rewritten = shim.rewrite_args_for_performance(args, input_value_index=1, swapped_to_sdr=True)
+
+    assert "-maxrate" in rewritten
+    assert "-filter_complex" in rewritten
+    filter_graph = rewritten[rewritten.index("-filter_complex") + 1]
+    assert "null" in filter_graph
+    assert "tonemap=hable" not in filter_graph
+
+
+def test_shim_rewrite_preserves_output_codec_after_malformed_bitrate_option(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "REMOVE_BITRATE_LIMITS", True)
+
+    args = [
+        "-i",
+        "/media/movie-2160-hdr.mkv",
+        "-maxrate",
+        "-codec:1",
+        "aac",
+    ]
+
+    rewritten = shim.rewrite_args_for_performance(args, input_value_index=1, swapped_to_sdr=True)
+
+    assert "-maxrate" in rewritten
+    assert rewritten[rewritten.index("-codec:1") + 1] == "aac"
+
+
+def test_shim_rewrite_preserves_zscale_size_resize_filters(monkeypatch):
+    shim = load_shim()
+    monkeypatch.setattr(shim, "STRIP_HDR_TONEMAP_FILTERS", True)
+
+    args = [
+        "-i",
+        "/media/movie-2160-hdr.mkv",
+        "-filter_complex",
+        "[0:v]zscale=size=1280x720,tonemap=hable,format=yuv420p[v]",
+    ]
+
+    rewritten = shim.rewrite_args_for_performance(args, input_value_index=1, swapped_to_sdr=True)
+
+    filter_graph = rewritten[rewritten.index("-filter_complex") + 1]
+    assert "zscale=size=1280x720" in filter_graph
+    assert "tonemap=hable" not in filter_graph
+
+
 def test_shim_loads_external_json_config_before_runtime(monkeypatch, tmp_path):
     token_path = tmp_path / "plex-token"
     token_path.write_text("file-token\n", encoding="utf-8")

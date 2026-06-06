@@ -91,7 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     print(redact_secrets("Prepared native fuzz command:\n  " + " ".join(command)))
 
     if not args.run:
-        print("Dry run only. Set DOWNSHIFTARR_HARDENING_MANUAL=1 and pass --run to execute.")
+        print(
+            "Dry run only. Invoke through UV_LINK_MODE=copy uv run --locked, set DOWNSHIFTARR_HARDENING_MANUAL=1, and pass --run to execute."
+        )
         return 0
     if os.environ.get(MANUAL_ENV) != "1":
         print(f"Refusing to run native fuzzing without {MANUAL_ENV}=1.", file=sys.stderr)

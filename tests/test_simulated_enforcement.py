@@ -89,6 +89,60 @@ def test_client_profile_matrix_matches_session_and_client(profile, monkeypatch):
     assert identifier == profile.machine_identifier
 
 
+@pytest.mark.parametrize(
+    "extra_arg",
+    [
+        "--media-type=live",
+        "--library-name=Live TV",
+        "--library-name=Dispatcharr",
+        "--section-type=dvr",
+    ],
+)
+def test_live_tv_event_bypasses_before_plex_connection(monkeypatch, extra_arg):
+    monkeypatch.setattr(
+        Downshiftarr,
+        "connect_plex",
+        lambda: (_ for _ in ()).throw(AssertionError("Live TV must bypass before Plex connection")),
+    )
+    monkeypatch.setattr(
+        Downshiftarr,
+        "terminate_best_effort",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must not terminate")),
+    )
+
+    code = Downshiftarr.main(
+        [
+            "Downshiftarr.py",
+            "--rating-key=live-rk",
+            "--session-key=live-session-key",
+            "--session-id=live-session-id",
+            "--video-decision=transcode",
+            extra_arg,
+        ]
+    )
+
+    assert code == 0
+
+
+def test_live_tv_session_bypasses_before_remote_control(monkeypatch):
+    session = protected_session(machine_identifier="client-plex-web")
+    session.type = "live"
+    session.librarySectionTitle = "Live TV"
+    client = FakeClient(machine_identifier="client-plex-web")
+    plex = FakePlexServer(sessions=[session], clients=[client])
+
+    code, terminations = run_main_with_fake_plex(monkeypatch, plex)
+
+    assert code == 0
+    assert terminations == []
+    assert plex.fetch_calls == []
+    assert client.play_calls == []
+
+
+def test_live_tv_detection_does_not_match_ordinary_library_text():
+    assert not Downshiftarr.is_live_tv_event(InputEvent(library_name="Olivia Collection"))
+
+
 def test_fallback_selection_prefers_1080_sdr_for_4k_hdr(monkeypatch):
     monkeypatch.setattr(Downshiftarr, "MAX_ALLOWED_HEIGHT", 2000)
     monkeypatch.setattr(Downshiftarr, "PREFER_HEIGHTS", (1080, 720, 480))

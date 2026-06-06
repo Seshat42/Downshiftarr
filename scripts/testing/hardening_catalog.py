@@ -31,34 +31,34 @@ _RUNS = (
         category="boundary",
         name="boundary-values",
         description="Explicit threshold and malformed-value checks for parsing, media policy, and token-safe URL handling.",
-        list_command="uv run pytest -m boundary",
-        first_pass_command="uv run pytest -m boundary -q",
+        list_command="UV_LINK_MODE=copy uv run --locked pytest -m boundary",
+        first_pass_command="UV_LINK_MODE=copy uv run --locked pytest -m boundary -q",
         enhancement_note="Add new boundary rows for every bug found by fuzz, monkey, chaos, or mutation campaigns.",
     ),
     HardeningRun(
         category="property",
         name="property-invariants",
         description="Hypothesis-generated invariants for parsers, dynamic range classification, fallback selection, and shim rewrites.",
-        list_command="uv run pytest -m property",
-        first_pass_command="uv run pytest -m property --hypothesis-profile=hardening -q",
+        list_command="UV_LINK_MODE=copy uv run --locked pytest -m property",
+        first_pass_command="UV_LINK_MODE=copy uv run --locked pytest -m property --hypothesis-profile=hardening -q",
         enhancement_note="Promote any minimized counterexample into a named unit or boundary regression.",
     ),
     HardeningRun(
         category="fuzz",
         name="python-fuzz",
         description="Pytest-level fuzz/generative tests for hostile strings, metadata dictionaries, and transcoder arg vectors.",
-        list_command="uv run pytest -m fuzz",
-        first_pass_command="uv run pytest -m fuzz --hypothesis-profile=hardening -q",
+        list_command="UV_LINK_MODE=copy uv run --locked pytest -m fuzz",
+        first_pass_command="UV_LINK_MODE=copy uv run --locked pytest -m fuzz --hypothesis-profile=hardening -q",
         enhancement_note="Grow strategies toward any parser branch or log sanitizer that remains unexercised.",
     ),
     HardeningRun(
         category="native_fuzz",
         name="atheris-targets",
         description="Atheris/libFuzzer entrypoints for parser, metadata, and shim argument-rewrite surfaces.",
-        list_command="uv run --python 3.11 python scripts/testing/run_native_fuzz.py --list-targets",
+        list_command="UV_LINK_MODE=copy uv run --locked python scripts/testing/run_native_fuzz.py --list-targets",
         first_pass_command=(
-            "DOWNSHIFTARR_HARDENING_MANUAL=1 uv run --python 3.11 python "
-            "scripts/testing/run_native_fuzz.py --target downshiftarr-parsers --runs 1000 --max-total-time 30 --run"
+            "DOWNSHIFTARR_HARDENING_MANUAL=1 UV_LINK_MODE=copy uv run --locked python "
+            "scripts/testing/run_native_fuzz.py --target shim-parsers --runs 100000 --max-total-time 300 --run"
         ),
         enhancement_note="Start with short seeded runs, then add corpora from minimized crashes only after redaction.",
     ),
@@ -66,9 +66,9 @@ _RUNS = (
         category="monkey",
         name="client-event-monkey",
         description="Seeded fake Plex/Tautulli/client event sequences across the full simulated client profile registry.",
-        list_command="uv run python scripts/testing/run_monkey.py --list-scenarios",
+        list_command="UV_LINK_MODE=copy uv run --locked python scripts/testing/run_monkey.py --list-scenarios",
         first_pass_command=(
-            "DOWNSHIFTARR_HARDENING_MANUAL=1 uv run python "
+            "DOWNSHIFTARR_HARDENING_MANUAL=1 UV_LINK_MODE=copy uv run --locked python "
             "scripts/testing/run_monkey.py --scenario client-event-matrix --seed 424242 --iterations 250 --run"
         ),
         enhancement_note="Save failing seeds as deterministic regression tests before increasing iteration counts.",
@@ -77,9 +77,9 @@ _RUNS = (
         category="chaos",
         name="fake-service-chaos",
         description="Deterministic fake Plex/Tautulli fault injection for timeouts, malformed payloads, and fallback enforcement paths.",
-        list_command="uv run python scripts/testing/run_chaos.py --list-scenarios",
+        list_command="UV_LINK_MODE=copy uv run --locked python scripts/testing/run_chaos.py --list-scenarios",
         first_pass_command=(
-            "DOWNSHIFTARR_HARDENING_MANUAL=1 uv run python "
+            "DOWNSHIFTARR_HARDENING_MANUAL=1 UV_LINK_MODE=copy uv run --locked python "
             "scripts/testing/run_chaos.py --scenario fake-service-faults --seed 515151 --iterations 100 --run"
         ),
         enhancement_note="Add a new chaos scenario for each external-service failure mode discovered in Loki testing.",
@@ -88,9 +88,10 @@ _RUNS = (
         category="mutation",
         name="mutmut-campaign",
         description="mutmut campaign setup against the Python enforcement core, with reports kept local and ignored.",
-        list_command="uv run python scripts/testing/run_mutation.py --list-targets",
+        list_command="UV_LINK_MODE=copy uv run --locked python scripts/testing/run_mutation.py --list-targets",
         first_pass_command=(
-            "DOWNSHIFTARR_HARDENING_MANUAL=1 uv run python scripts/testing/run_mutation.py --target downshiftarr-core --run"
+            "DOWNSHIFTARR_HARDENING_MANUAL=1 UV_LINK_MODE=copy uv run --locked python "
+            "scripts/testing/run_mutation.py --target downshiftarr-core --run"
         ),
         enhancement_note="Review surviving mutants and add focused tests before rerunning the same target.",
     ),

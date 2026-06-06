@@ -49,9 +49,12 @@ If itâ€™s protected **and** video is being transcoded:
 
 Downshiftarr only downshifts across Plex **Versions** of the same release. It must not cross Plex Editions such as theatrical, director's cut, 3D, or special-edition releases. If edition metadata or `{edition-...}` file naming indicates that two files are different editions, Downshiftarr treats them as separate release surfaces and passes through rather than swapping to the wrong cut.
 
+Live TV, DVR, tuner, HDHomeRun, and Dispatcharr paths are a hard bypass. They are not Plex Versions of library items, so both `Downshiftarr.py` and the `Plex Transcoder` shim pass them through immediately and do not attempt Plex metadata lookup, remote control, termination, or waterfall selection.
+
 The optional **Plex Transcoder shim** runs *before* Downshiftarr.py ever gets an event:
 
 - Plex spawns `Plex Transcoder` â†’ the shim executes.
+- Live TV/tuner inputs bypass instantly so Plex can handle the stream normally.
 - The shim detects whether the transcode input is protected (>1080 actual height by default).
 - If protected, it tries to **waterfall** to a compliant sibling version (e.g. 1080p SDR).
 - If an already downshifted SDR version is still being transcoded, it can continue the waterfall to 720p, 576p, 480p, and 360p versions.

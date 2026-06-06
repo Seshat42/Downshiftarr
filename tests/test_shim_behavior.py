@@ -833,6 +833,10 @@ def test_shim_bypasses_live_tv_inputs_before_any_plex_lookup(monkeypatch, tmp_pa
         ["-i", "http://172.17.0.1:9191/stream/7.ts", "-f", "hls"],
         ["-metadata", "service_name=Dispatcharr HDHomeRun", "-i", "/tmp/tuner-buffer.ts", "-f", "segment"],
         ["-i", "/video/:/transcode/livetv/session/abc/seg.ts", "-f", "ssegment"],
+        ["--section-type=dvr", "-i", "/tmp/plex-live-buffer.ts", "-f", "dash"],
+        ["--section-type=tuner", "-i", "/tmp/plex-live-buffer.ts", "-f", "dash"],
+        ["-metadata", "service_name=DVR", "-i", "/tmp/plex-live-buffer.ts", "-f", "segment"],
+        ["-metadata", "librarySectionType=tuner", "-i", "/tmp/plex-live-buffer.ts", "-f", "segment"],
     ],
 )
 def test_shim_detects_live_tv_markers(args):
@@ -845,6 +849,8 @@ def test_shim_live_tv_detection_does_not_match_ordinary_library_files():
     shim = load_shim()
 
     assert not shim.args_indicate_live_tv(["-i", "/media/Movies/Live Free or Die Hard (2007) - 1080p.mkv", "-f", "dash"])
+    assert not shim.args_indicate_live_tv(["-i", "/media/Movies/The Tuner (2026) - 2160p.mkv", "-f", "dash"])
+    assert not shim.args_indicate_live_tv(["-i", "/media/Movies/DVR (2026) - 2160p.mkv", "-f", "dash"])
 
 
 def test_shim_rewrite_preserves_output_codecs_and_resize_filters(monkeypatch):

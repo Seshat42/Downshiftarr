@@ -286,6 +286,7 @@ LIVE_TV_BYPASS_MARKERS: Tuple[str, ...] = (
     "/livetv/",
     "live tv",
     "live-tv",
+    "livetv",
     "/hdhr/",
     "hdhomerun",
     "tv.plex.grabbers.hdhomerun",
@@ -295,6 +296,29 @@ LIVE_TV_BYPASS_MARKERS: Tuple[str, ...] = (
     "172.17.0.1:9191",
     ":9191/hdhr",
     ":9191/stream",
+)
+
+LIVE_TV_STRUCTURED_BYPASS_MARKERS: Tuple[str, ...] = (
+    "--section-type=dvr",
+    "--section-type=tuner",
+    "--section-type=livetv",
+    "section_type=dvr",
+    "section_type=tuner",
+    "section_type=livetv",
+    "section-type=dvr",
+    "section-type=tuner",
+    "section-type=livetv",
+    "librarysectiontype=dvr",
+    "librarysectiontype=tuner",
+    "librarysectiontype=livetv",
+    "media-type=live",
+    "media_type=live",
+    "type=dvr",
+    "type=tuner",
+    "type=livetv",
+    "service_name=dvr",
+    "service_name=tuner",
+    "service_name=live tv",
 )
 
 
@@ -1045,6 +1069,8 @@ def args_indicate_live_tv(args: Sequence[str]) -> bool:
             continue
         parsed = urllib.parse.urlparse(text)
         if parsed.netloc.endswith(":9191") and any(part in parsed.path for part in ("/hdhr", "/stream", "/auto/")):
+            return True
+        if any(marker in text for marker in LIVE_TV_STRUCTURED_BYPASS_MARKERS):
             return True
         if any(marker in text for marker in LIVE_TV_BYPASS_MARKERS):
             return True

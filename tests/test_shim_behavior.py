@@ -812,7 +812,22 @@ def test_shim_bypasses_live_tv_inputs_before_any_plex_lookup(monkeypatch, tmp_pa
         "plex_find_item_by_file",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass live Plex lookup")),
     )
+    monkeypatch.setattr(
+        shim,
+        "plex_fetch_full_metadata_for_swap",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass Plex metadata API")),
+    )
     monkeypatch.setattr(shim, "_load_cache", lambda: (_ for _ in ()).throw(AssertionError("Live TV must bypass cache")))
+    monkeypatch.setattr(
+        shim,
+        "protected_waterfall_decision",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass protected waterfall")),
+    )
+    monkeypatch.setattr(
+        shim,
+        "pick_best_fallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass fallback waterfall")),
+    )
     monkeypatch.setattr(
         shim,
         "exec_real_transcoder",
@@ -830,12 +845,15 @@ def test_shim_bypasses_live_tv_inputs_before_any_plex_lookup(monkeypatch, tmp_pa
     [
         ["-i", "http://10.67.0.1:9191/hdhr/auto/v1.ts", "-f", "dash"],
         ["-i", "http://10.67.0.1:9191/hdhr%2Fauto%2Fv1.ts", "-f", "dash"],
+        ["-i", "http://127.0.0.1:9191/auto/channel.ts", "-f", "dash"],
         ["-i", "http://172.17.0.1:9191/stream/7.ts", "-f", "hls"],
         ["-metadata", "service_name=Dispatcharr HDHomeRun", "-i", "/tmp/tuner-buffer.ts", "-f", "segment"],
         ["-i", "/video/:/transcode/livetv/session/abc/seg.ts", "-f", "ssegment"],
         ["--section-type=dvr", "-i", "/tmp/plex-live-buffer.ts", "-f", "dash"],
         ["--section-type=tuner", "-i", "/tmp/plex-live-buffer.ts", "-f", "dash"],
         ["-metadata", "service_name=DVR", "-i", "/tmp/plex-live-buffer.ts", "-f", "segment"],
+        ["-metadata", "service_name=tuner", "-i", "/tmp/plex-live-buffer.ts", "-f", "segment"],
+        ["-metadata", "librarySectionType=dvr", "-i", "/tmp/plex-live-buffer.ts", "-f", "segment"],
         ["-metadata", "librarySectionType=tuner", "-i", "/tmp/plex-live-buffer.ts", "-f", "segment"],
     ],
 )

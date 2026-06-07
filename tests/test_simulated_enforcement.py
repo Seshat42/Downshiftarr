@@ -96,6 +96,9 @@ def test_client_profile_matrix_matches_session_and_client(profile, monkeypatch):
         "--library-name=Live TV",
         "--library-name=Dispatcharr",
         "--section-type=dvr",
+        "--section-type=tuner",
+        "--library-name=HDHomeRun",
+        "--action=tv.plex.grabbers.hdhomerun",
     ],
 )
 def test_live_tv_event_bypasses_before_plex_connection(monkeypatch, extra_arg):
@@ -124,12 +127,33 @@ def test_live_tv_event_bypasses_before_plex_connection(monkeypatch, extra_arg):
     assert code == 0
 
 
-def test_live_tv_session_bypasses_before_remote_control(monkeypatch):
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("type", "live"),
+        ("librarySectionTitle", "Live TV"),
+        ("librarySectionTitle", "Dispatcharr"),
+        ("librarySectionType", "tuner"),
+        ("librarySectionType", "dvr"),
+        ("guid", "tv.plex.grabbers.hdhomerun://lineup/1"),
+        ("key", "/livetv/sessions/abc"),
+    ],
+)
+def test_live_tv_session_bypasses_before_remote_control(monkeypatch, field, value):
     session = protected_session(machine_identifier="client-plex-web")
-    session.type = "live"
-    session.librarySectionTitle = "Live TV"
+    setattr(session, field, value)
     client = FakeClient(machine_identifier="client-plex-web")
     plex = FakePlexServer(sessions=[session], clients=[client])
+    monkeypatch.setattr(
+        Downshiftarr,
+        "fetch_library_item",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass Plex metadata lookup")),
+    )
+    monkeypatch.setattr(
+        Downshiftarr,
+        "pick_best_fallback_media_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Live TV must bypass waterfall selection")),
+    )
 
     code, terminations = run_main_with_fake_plex(monkeypatch, plex)
 

@@ -811,6 +811,7 @@ LIVE_TV_EXACT_VALUES = (
     "livetv",
 )
 LIVE_TV_MARKERS = (
+    "/livetv/",
     "live tv",
     "live-tv",
     "dvr",
